@@ -1,0 +1,33 @@
+---
+- name: Create staging directory
+  ansible.windows.win_file:
+    path: C:\Temp\Sysmon
+    state: directory
+
+- name: Download Sysmon
+  ansible.windows.win_get_url:
+    url: "https://download.sysinternals.com/files/Sysmon.zip"
+    dest: C:\Temp\Sysmon.zip
+
+- name: Unzip Sysmon
+  community.windows.win_unzip:
+    src: C:\Temp\Sysmon.zip
+    dest: C:\Temp\Sysmon
+    creates: C:\Temp\Sysmon\Sysmon64.exe
+
+- name: Copy Sysmon config
+  ansible.windows.win_copy:
+    src: "{{ playbook_dir }}/../siem/sysmon/sysmonconfig.xml"
+    dest: C:\Temp\sysmonconfig.xml
+
+- name: Install Sysmon service
+  ansible.windows.win_command: >
+    C:\Temp\Sysmon\Sysmon64.exe -accepteula -i C:\Temp\sysmonconfig.xml
+  args:
+    creates: C:\Windows\Sysmon64.exe
+
+- name: Verify Sysmon service running
+  ansible.windows.win_service:
+    name: Sysmon64
+    state: started
+    start_mode: auto

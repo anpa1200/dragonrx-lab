@@ -1,0 +1,21 @@
+FROM eclipse-temurin:11-jdk-jammy
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      python3 wget curl maven git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Build marshalsec from source (release JARs from 2018 repo are stale)
+RUN git clone --depth=1 https://github.com/mbechler/marshalsec.git /build/marshalsec && \
+    cd /build/marshalsec && \
+    mvn -q clean package -DskipTests && \
+    cp target/marshalsec-0.0.3-SNAPSHOT-all.jar /opt/marshalsec.jar && \
+    rm -rf /build /root/.m2
+
+RUN mkdir -p /opt/payloads
+
+COPY payloads/ /opt/payloads/
+COPY start.sh  /opt/start.sh
+RUN chmod +x /opt/start.sh
+
+EXPOSE 1389 8080
+CMD ["/opt/start.sh"]

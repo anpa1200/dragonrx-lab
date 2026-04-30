@@ -1,0 +1,77 @@
+---
+- name: Install AD DS role
+  ansible.windows.win_feature:
+    name: AD-Domain-Services
+    include_management_tools: true
+    state: present
+  register: ad_feature
+
+- name: Promote to Domain Controller
+  microsoft.ad.domain:
+    dns_domain_name: "{{ domain_name }}"
+    domain_netbios_name: "{{ domain_netbios }}"
+    safe_mode_password: "{{ safe_mode_password }}"
+    state: domain_controller
+  register: domain_result
+  when: ad_feature.changed or ad_feature.reboot_required
+
+- name: Reboot after domain promotion
+  ansible.windows.win_reboot:
+    reboot_timeout: 600
+    post_reboot_delay: 60
+  when: domain_result.changed or domain_result.reboot_required
+
+- name: Wait for AD web services
+  ansible.windows.win_wait_for:
+    port: 389
+    host: 127.0.0.1
+    timeout: 120
+
+- name: Create domain users
+  microsoft.ad.user:
+    name: "{{ item.name }}"
+    sam_account_name: "{{ item.name }}"
+    password: "{{ item.password }}"
+    password_never_expires: "{{ item.password_never_expires | default(false) }}"
+    description: "{{ item.description | default(omit) }}"
+    enabled: true
+    state: present
+  loop: "{{ lab_users }}"
+
+- name: Set SPN on svc_backup (Kerberoastable)
+  ansible.windows.win_command: >
+    setspn -A {{ item.spn }} {{ domain_netbios }}\{{ item.name }}
+  loop: "{{ lab_users | selectattr('spn', 'defined') | list }}"
+
+- name: Add svc_backup to Backup Operators
+  microsoft.ad.group:
+    name: "Backup Operators"
+    members:
+      add: ["svc_backup"]
+    state: present
+
+- name: Enable Directory Service Access auditing (required for DCSync EID 4662)
+  ansible.windows.win_command: >
+    auditpol /set /subcategory:"Directory Service Access" /success:enable /failure:enable
+
+- name: Set SACL on domain NC for DCSync detection
+  ansible.windows.win_powershell:
+    script: |
+      $rootDSE  = [ADSI]"LDAP://RootDSE"
+      $defaultNC = $rootDSE.defaultNamingContext
+      $acl      = (Get-Acl "AD:\$defaultNC")
+      $identity = [System.Security.Principal.NTAccount]"Everyone"
+      $adRights = [System.DirectoryServices.ActiveDirectoryRights]"ExtendedRight"
+      $type     = [System.Security.AccessControl.AccessControlType]"Success"
+      $inherit  = [System.DirectoryServices.ActiveDirectorySecurityInheritance]"All"
+      $guidAll  = [guid]"1131f6ad-9c07-11d1-f79f-00c04fc2dcd2"
+      $ace = New-Object System.DirectoryServices.ActiveDirectoryAuditRule(
+          $identity, $adRights, $type, $guidAll, $inherit)
+      $acl.AddAuditRule($ace)
+      Set-Acl "AD:\$defaultNC" $acl
+      Write-Output "SACL configured for DCSync detection (EID 4662)"
+
+- name: Set DNS forwarder
+  ansible.windows.win_powershell:
+    script: |
+      Set-DnsServerForwarder -IPAddress "8.8.8.8" -PassThru

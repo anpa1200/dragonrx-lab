@@ -1,0 +1,156 @@
+networks:
+  attacker_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.0.0.0/24
+  target_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 192.168.10.0/24
+          gateway: 192.168.10.254
+
+services:
+
+  # ── ATTACKER SIDE ───────────────────────────────────────────────────
+
+  kali:
+    image: kalilinux/kali-rolling:latest
+    container_name: dragonrx_kali
+    hostname: kali
+    networks:
+      attacker_net:
+        ipv4_address: 10.0.0.5
+      target_net:
+        ipv4_address: 192.168.10.5
+    tty: true
+    stdin_open: true
+    volumes:
+      - ./attacker/tools:/opt/tools
+      - ./attacker/loot:/opt/loot
+    cap_add: [NET_ADMIN, NET_RAW]
+    sysctls:
+      net.ipv4.ip_forward: 1
+
+  sliver_c2:
+    build:
+      context: ./c2
+      dockerfile: Dockerfile.sliver
+    image: dragonrx_sliver:local
+    container_name: dragonrx_c2
+    hostname: c2
+    networks:
+      attacker_net:
+        ipv4_address: 10.0.0.10
+    ports:
+      - "31337:31337"
+    volumes:
+      - ./c2/configs:/root/.sliver
+      - ./c2/loot:/opt/loot
+    restart: unless-stopped
+
+  jndi_server:
+    build:
+      context: ./jndi
+      dockerfile: Dockerfile.jndi
+    container_name: dragonrx_jndi
+    hostname: jndi
+    networks:
+      attacker_net:
+        ipv4_address: 10.0.0.20
+    ports:
+      - "1389:1389"
+      - "8888:8080"
+
+  # ── TARGET SIDE ─────────────────────────────────────────────────────
+
+  web01:
+    image: ghcr.io/christophetd/log4shell-vulnerable-app:latest
+    container_name: dragonrx_web01
+    hostname: web01
+    networks:
+      attacker_net:
+        ipv4_address: 10.0.0.100
+      target_net:
+        ipv4_address: 192.168.10.100
+    ports:
+      - "8080:8080"
+    environment:
+      - DOMAIN_CONTROLLER=192.168.10.10
+      - LDAP_USER=svc_ldap
+      - LDAP_PASS=NovaTech2021!
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- --header='X-Api-Version: health' http://localhost:8080/ >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # ── SOC / DETECTION SIDE ────────────────────────────────────────────
+
+  wazuh:
+    image: wazuh/wazuh-manager:4.7.0
+    container_name: dragonrx_wazuh
+    hostname: wazuh
+    networks:
+      target_net:
+        ipv4_address: 192.168.10.200
+    ports:
+      - "1514:1514/udp"
+      - "1515:1515"
+      - "55000:55000"
+    volumes:
+      - wazuh_data:/var/ossec/data
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep wazuh-analysisd > /dev/null && pgrep wazuh-remoted > /dev/null"]
+      interval: 20s
+      retries: 5
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+    container_name: dragonrx_elastic
+    hostname: elastic
+    networks:
+      target_net:
+        ipv4_address: 192.168.10.202
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms4g -Xmx4g
+    volumes:
+      - elastic_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health | grep -v red"]
+      interval: 20s
+      retries: 10
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.11.0
+    container_name: dragonrx_kibana
+    hostname: kibana
+    networks:
+      target_net:
+        ipv4_address: 192.168.10.203
+    ports:
+      - "5601:5601"
+    environment:
+      - ELASTICSEARCH_HOSTS=http://192.168.10.202:9200
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
+  zeek:
+    image: zeek/zeek:6.2.1
+    container_name: dragonrx_zeek
+    hostname: zeek
+    network_mode: host
+    volumes:
+      - ./siem/zeek/local.zeek:/usr/local/zeek/share/zeek/site/local.zeek:ro
+      - zeek_logs:/usr/local/zeek/logs
+    cap_add: [NET_ADMIN, NET_RAW]
+    command: zeek -i any /usr/local/zeek/share/zeek/site/local.zeek
+
+volumes:
+  wazuh_data:
+  elastic_data:
+  zeek_logs:

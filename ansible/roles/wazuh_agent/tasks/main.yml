@@ -1,0 +1,21 @@
+---
+- name: Download Wazuh agent MSI
+  ansible.windows.win_get_url:
+    url: "https://packages.wazuh.com/4.x/windows/wazuh-agent-4.7.0-1.msi"
+    dest: C:\Temp\wazuh-agent.msi
+
+- name: Install Wazuh agent
+  ansible.windows.win_package:
+    path: C:\Temp\wazuh-agent.msi
+    product_id: "{54E68B4D-3C4E-4D9C-8E65-C4A62C6B9E7A}"
+    arguments: >-
+      WAZUH_MANAGER="{{ wazuh_manager_ip }}"
+      WAZUH_REGISTRATION_SERVER="{{ wazuh_manager_ip }}"
+      WAZUH_AGENT_NAME="{{ inventory_hostname }}"
+    state: present
+
+- name: Start and enable Wazuh agent
+  ansible.windows.win_service:
+    name: WazuhSvc
+    state: started
+    start_mode: auto

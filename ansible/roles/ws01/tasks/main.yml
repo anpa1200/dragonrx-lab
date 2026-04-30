@@ -1,0 +1,30 @@
+---
+- name: Wait for DC01 LDAP
+  ansible.windows.win_wait_for:
+    host: "{{ domain_controller_ip }}"
+    port: 389
+    timeout: 300
+
+- name: Join domain
+  microsoft.ad.membership:
+    dns_domain_name: "{{ domain_name }}"
+    domain_admin_user: "{{ domain_netbios }}\\{{ domain_admin_user }}"
+    domain_admin_password: "{{ domain_admin_password }}"
+    state: domain
+  register: domain_join
+
+- name: Reboot after domain join
+  ansible.windows.win_reboot:
+    reboot_timeout: 300
+  when: domain_join.changed
+
+- name: Add jsmith as local administrator
+  ansible.windows.win_group_membership:
+    name: Administrators
+    members: ["NOVATECH\\jsmith"]
+    state: present
+
+- name: Create C:\Temp for staging artifacts
+  ansible.windows.win_file:
+    path: C:\Temp
+    state: directory

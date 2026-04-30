@@ -1,0 +1,25 @@
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV CATALINA_HOME=/opt/tomcat
+ENV JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64
+
+RUN apt-get update && apt-get install -y \
+    openjdk-8-jdk wget curl net-tools iputils-ping \
+    && rm -rf /var/lib/apt/lists/*
+
+# Tomcat 9.0.54 — matches original lab spec
+RUN wget -q https://archive.apache.org/dist/tomcat/tomcat-9/v9.0.54/bin/apache-tomcat-9.0.54.tar.gz \
+    -O /tmp/tomcat.tar.gz \
+    && tar xzf /tmp/tomcat.tar.gz -C /opt \
+    && mv /opt/apache-tomcat-9.0.54 /opt/tomcat \
+    && rm /tmp/tomcat.tar.gz
+
+# Use christophetd/log4shell-vulnerable-app WAR (Log4j 2.14.1, Java 8 pre-u191 target)
+# Download pre-built release:
+RUN wget -q \
+    https://github.com/christophetd/log4shell-vulnerable-app/releases/download/v1.0/log4shell-vulnerable-app.war \
+    -O /opt/tomcat/webapps/ROOT.war
+
+EXPOSE 8443
+CMD ["/opt/tomcat/bin/catalina.sh", "run"]

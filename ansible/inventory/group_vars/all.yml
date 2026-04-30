@@ -1,0 +1,21 @@
+lab_users:
+  - name: jsmith
+    password: "Research#2024"
+    department: "R&D"
+    local_admin_on: ws01
+
+  - name: svc_ldap
+    password: "NovaTech2021!"
+    description: "LDAP service account — creds leaked in context.xml"
+    password_never_expires: true
+
+  - name: svc_backup
+    password: "Backup_Svc99!"
+    description: "Kerberoastable backup service account"
+    password_never_expires: true
+    spn: "MSSQLSvc/fs01.novatech.local:1433"
+    member_of: "Backup Operators"
+
+wazuh_manager_ip: 192.168.10.200
+sysmon_version: "15.0"
+sysmon_sha256: ""

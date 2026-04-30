@@ -1,0 +1,91 @@
+<group name="dragonrx,">
+
+  <!-- LSASS memory access (T1003.001) -->
+  <rule id="100110" level="15">
+    <if_group>sysmon_event10</if_group>
+    <field name="win.eventdata.targetImage" type="pcre2">(?i)lsass\.exe</field>
+    <description>LSASS memory access — credential dumping attempt (T1003.001)</description>
+    <mitre>
+      <id>T1003.001</id>
+    </mitre>
+  </rule>
+
+  <!-- comsvcs.dll MiniDump via rundll32 (LOLBAS) -->
+  <rule id="100111" level="14">
+    <if_group>sysmon_event1</if_group>
+    <field name="win.eventdata.commandLine" type="pcre2">(?i)comsvcs.*MiniDump</field>
+    <description>LSASS dump via comsvcs.dll MiniDump — LOLBAS credential access (T1003.001)</description>
+    <mitre>
+      <id>T1003.001</id>
+    </mitre>
+  </rule>
+
+  <!-- DCSync via DS-Replication-Get-Changes-All (T1003.006) -->
+  <!-- Requires: Advanced Audit → DS Access → "Audit Directory Service Access" enabled on DC -->
+  <!-- EID 4662 fires when a replication right is exercised on an AD object                  -->
+  <rule id="100120" level="15">
+    <if_group>windows_event_log</if_group>
+    <field name="win.system.eventID">4662</field>
+    <field name="win.eventdata.properties" type="pcre2">1131f6ad-9c07-11d1-f79f-00c04fc2dcd2</field>
+    <description>DCSync — DS-Replication-Get-Changes-All access right on DC (EID 4662, T1003.006). Requires DS Access auditing + SACL on domain NC.</description>
+    <mitre>
+      <id>T1003.006</id>
+    </mitre>
+  </rule>
+
+  <!-- Kerberoasting — RC4 TGS request (T1558.003) -->
+  <!-- EID 4769: "A Kerberos service ticket was requested"                                  -->
+  <!-- ticketEncryptionType 0x17 = RC4-HMAC; legitimate modern clients request AES (0x12)  -->
+  <rule id="100130" level="12">
+    <if_group>windows_event_log</if_group>
+    <field name="win.system.eventID">4769</field>
+    <field name="win.eventdata.ticketEncryptionType" type="pcre2">0x17</field>
+    <description>Kerberoasting signal — RC4 (0x17) TGS request (EID 4769, T1558.003). Tune against baseline; high noise in legacy environments.</description>
+    <mitre>
+      <id>T1558.003</id>
+    </mitre>
+  </rule>
+
+  <!-- DLL sideloading — unsigned DLL loaded by java.exe (T1574.002) -->
+  <rule id="100140" level="14">
+    <if_group>sysmon_event7</if_group>
+    <field name="win.eventdata.image" type="pcre2">(?i)java\.exe</field>
+    <field name="win.eventdata.signed" type="pcre2">false</field>
+    <description>Unsigned DLL loaded by java.exe — DLL sideloading (T1574.002)</description>
+    <mitre>
+      <id>T1574.002</id>
+    </mitre>
+  </rule>
+
+  <!-- Pass-the-Hash — NTLM logon Type 3 from unexpected source (T1550.002) -->
+  <rule id="100150" level="12">
+    <if_sid>60122</if_sid>
+    <field name="win.eventdata.logonType" type="pcre2">3</field>
+    <field name="win.eventdata.authenticationPackageName" type="pcre2">(?i)NtLmSsp</field>
+    <description>NTLM LogonType=3 — possible Pass-the-Hash. Tune: exclude known management IPs. (T1550.002)</description>
+    <mitre>
+      <id>T1550.002</id>
+    </mitre>
+  </rule>
+
+  <!-- Scheduled task creation (T1053.005) -->
+  <rule id="100160" level="10">
+    <if_sid>60145</if_sid>
+    <description>Scheduled task created (T1053.005)</description>
+    <mitre>
+      <id>T1053.005</id>
+    </mitre>
+  </rule>
+
+  <!-- VSS deletion — vssadmin/wmic/diskshadow process creation (T1490) -->
+  <rule id="100170" level="15">
+    <if_group>sysmon_event1</if_group>
+    <field name="win.eventdata.image" type="pcre2">(?i)(vssadmin|wmic|diskshadow|wbadmin)\.exe</field>
+    <field name="win.eventdata.commandLine" type="pcre2">(?i)(delete|remove)</field>
+    <description>VSS deletion via process creation — ransomware pre-stage (T1490). Primary signal: process commandline, not EID 524.</description>
+    <mitre>
+      <id>T1490</id>
+    </mitre>
+  </rule>
+
+</group>

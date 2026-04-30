@@ -1,0 +1,143 @@
+---
+# Smoke tests + detection validation
+# Usage: ansible-playbook ansible/playbooks/test.yml
+
+- name: "Test 1 — Network connectivity"
+  hosts: localhost
+  gather_facts: false
+  vars:
+    connectivity_checks:
+      - {host: 192.168.10.100, port: 8443, name: "WEB01 patient portal"}
+      - {host: 192.168.10.10,  port: 389,  name: "DC01 LDAP"}
+      - {host: 192.168.10.10,  port: 445,  name: "DC01 SMB"}
+      - {host: 192.168.10.20,  port: 445,  name: "FS01 SMB"}
+      - {host: 192.168.10.50,  port: 445,  name: "WS01 SMB"}
+      - {host: 192.168.10.200, port: 1515, name: "Wazuh enrollment"}
+      - {host: 192.168.10.202, port: 9200, name: "Elasticsearch"}
+      - {host: 192.168.10.203, port: 5601, name: "Kibana"}
+      - {host: 10.0.0.20,      port: 1389, name: "JNDI LDAP server"}
+      - {host: 10.0.0.20,      port: 8080, name: "JNDI payload server"}
+  tasks:
+    - name: Check TCP connectivity to all services
+      ansible.builtin.wait_for:
+        host: "{{ item.host }}"
+        port: "{{ item.port }}"
+        timeout: 10
+      loop: "{{ connectivity_checks }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+- name: "Test 2 — Windows services"
+  hosts: windows
+  gather_facts: false
+  tasks:
+    - name: Verify Sysmon running
+      ansible.windows.win_service_info:
+        name: Sysmon64
+      register: sysmon_info
+      failed_when: sysmon_info.services[0].state != "started"
+
+    - name: Verify Wazuh agent running
+      ansible.windows.win_service_info:
+        name: WazuhSvc
+      register: wazuh_info
+      failed_when: wazuh_info.services[0].state != "started"
+
+- name: "Test 3 — Active Directory state"
+  hosts: dc01
+  gather_facts: false
+  tasks:
+    - name: Verify domain functional
+      ansible.windows.win_powershell:
+        script: |
+          $domain = Get-ADDomain -ErrorAction Stop
+          if ($domain.DNSRoot -ne "novatech.local") {
+            Write-Error "Domain mismatch: $($domain.DNSRoot)"; exit 1
+          }
+          Write-Output "Domain OK: $($domain.DNSRoot)"
+
+    - name: Verify all lab users present
+      ansible.windows.win_powershell:
+        script: |
+          $users = @("jsmith", "svc_ldap", "svc_backup")
+          foreach ($u in $users) {
+            if (-not (Get-ADUser $u -ErrorAction SilentlyContinue)) {
+              Write-Error "Missing user: $u"; exit 1
+            }
+          }
+          Write-Output "All lab users present"
+
+    - name: Verify svc_backup SPN set (Kerberoastable)
+      ansible.windows.win_powershell:
+        script: |
+          $spns = (Get-ADUser svc_backup -Properties ServicePrincipalNames).ServicePrincipalNames
+          if ($spns -notcontains "MSSQLSvc/fs01.novatech.local:1433") {
+            Write-Error "Kerberoastable SPN missing"; exit 1
+          }
+          Write-Output "SPN OK: $spns"
+
+    - name: Verify Directory Service Access auditing enabled
+      ansible.windows.win_powershell:
+        script: |
+          $result = auditpol /get /subcategory:"Directory Service Access"
+          if ($result -notmatch "Success") {
+            Write-Error "DS Access auditing not enabled — EID 4662 will not fire"; exit 1
+          }
+          Write-Output "Audit policy OK"
+
+- name: "Test 4 — Detection validation (fire test payloads)"
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Fire JNDI DNS probe (benign — no code execution)
+      ansible.builtin.uri:
+        url: https://192.168.10.100:8443/api/login
+        method: POST
+        headers:
+          X-Api-Version: "${jndi:dns://10.0.0.20/test-probe}"
+          Content-Type: application/json
+        body: '{"username":"test","password":"probe"}'
+        body_format: raw
+        validate_certs: false
+        status_code: [200, 400, 401, 500]
+      register: probe_result
+
+    - name: Wait 10 seconds for Zeek to process
+      ansible.builtin.pause:
+        seconds: 10
+
+    - name: Check Zeek logged the JNDI pattern
+      ansible.builtin.shell: |
+        grep -rl "jndi" \
+          /var/lib/docker/volumes/dragonrx-lab_zeek_logs/_data/current/ 2>/dev/null \
+          | head -1
+      register: zeek_detection
+      delegate_to: localhost
+      failed_when: zeek_detection.stdout == ""
+      changed_when: false
+
+    - name: Check Elasticsearch received Wazuh alerts (last 5 min)
+      ansible.builtin.uri:
+        url: "http://192.168.10.202:9200/wazuh-alerts-*/_search"
+        method: POST
+        headers:
+          Content-Type: application/json
+        body_format: json
+        body:
+          query:
+            bool:
+              must:
+                - range:
+                    "@timestamp":
+                      gte: "now-5m"
+          size: 1
+        status_code: 200
+      register: wazuh_alerts
+      failed_when: wazuh_alerts.json.hits.total.value == 0
+
+    - name: "DETECTION REPORT"
+      ansible.builtin.debug:
+        msg:
+          - "JNDI probe HTTP status : {{ probe_result.status }}"
+          - "Zeek detection log     : {{ zeek_detection.stdout | default('NOT DETECTED') }}"
+          - "Wazuh alerts (5m)      : {{ wazuh_alerts.json.hits.total.value }}"

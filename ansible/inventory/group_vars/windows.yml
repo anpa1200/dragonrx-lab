@@ -1,0 +1,11 @@
+ansible_user: vagrant
+ansible_password: vagrant
+ansible_connection: winrm
+ansible_winrm_transport: negotiate
+ansible_winrm_server_cert_validation: ignore
+ansible_winrm_port: 5985
+ansible_become: false
+
+domain_admin_user: Administrator
+domain_admin_password: "NovaTech_Admin2024!"
+safe_mode_password: "DragonRx2024!"

@@ -1,0 +1,59 @@
+---
+- name: Wait for DC01 LDAP
+  ansible.windows.win_wait_for:
+    host: "{{ domain_controller_ip }}"
+    port: 389
+    timeout: 300
+
+- name: Join domain
+  microsoft.ad.membership:
+    dns_domain_name: "{{ domain_name }}"
+    domain_admin_user: "{{ domain_netbios }}\\{{ domain_admin_user }}"
+    domain_admin_password: "{{ domain_admin_password }}"
+    state: domain
+  register: domain_join
+
+- name: Reboot after domain join
+  ansible.windows.win_reboot:
+    reboot_timeout: 300
+  when: domain_join.changed
+
+- name: Create crown jewel directories
+  ansible.windows.win_file:
+    path: "{{ item }}"
+    state: directory
+  loop:
+    - C:\Research
+    - C:\Manufacturing
+    - C:\SYSVOL_backup
+
+- name: Generate dummy Phase III trial data
+  ansible.windows.win_powershell:
+    script: |
+      1..30 | ForEach-Object {
+        $content = "Phase III Antiviral Trial Data - Subject ID: $_ - Visit: $(Get-Date -Format yyyy-MM-dd)"
+        $content | Out-File "C:\Research\clinical_data_record_$_.csv" -Encoding UTF8
+      }
+      1..15 | ForEach-Object {
+        $content = "Proprietary Synthesis Process v2.3 - Batch $_ - CONFIDENTIAL"
+        $content | Out-File "C:\Manufacturing\synthesis_process_$_.docx" -Encoding UTF8
+      }
+      "NovaTech Phase III NDA Filing 2026 - RESTRICTED" | Out-File "C:\Research\NDA_filing_2026.pdf" -Encoding UTF8
+      Write-Output "Crown jewel data created"
+
+- name: Create SMB shares
+  ansible.windows.win_share:
+    name: "{{ item.name }}"
+    path: "{{ item.path }}"
+    full: "{{ item.full }}"
+    read: "{{ item.read }}"
+    state: present
+  loop:
+    - name: Research
+      path: C:\Research
+      full: "NOVATECH\\jsmith"
+      read: "NOVATECH\\Domain Users"
+    - name: Manufacturing
+      path: C:\Manufacturing
+      full: "NOVATECH\\Administrator"
+      read: "NOVATECH\\jsmith"

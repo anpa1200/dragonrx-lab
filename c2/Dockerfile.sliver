@@ -1,0 +1,19 @@
+FROM debian:bookworm-slim
+
+ARG SLIVER_VERSION=v1.7.3
+ARG TARGETARCH=amd64
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates curl mingw-w64 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL \
+      "https://github.com/BishopFox/sliver/releases/download/${SLIVER_VERSION}/sliver-server_linux-${TARGETARCH}" \
+      -o /usr/local/bin/sliver-server && \
+    chmod +x /usr/local/bin/sliver-server
+
+RUN mkdir -p /root/.sliver /opt/loot
+
+EXPOSE 31337 443 80
+
+ENTRYPOINT ["/usr/local/bin/sliver-server", "daemon"]
