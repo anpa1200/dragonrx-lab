@@ -97,37 +97,40 @@
       ansible.builtin.pause:
         seconds: 10
 
-    - name: Check Zeek logged the JNDI pattern
+    - name: Check Zeek raised Log4Shell NOTICE
       ansible.builtin.shell: |
         docker exec dragonrx_zeek sh -c \
-          'grep -il "jndi" *.log 2>/dev/null | head -1'
+          'grep -l "Log4Shell" notice.log 2>/dev/null | head -1'
       register: zeek_detection
       delegate_to: localhost
       failed_when: zeek_detection.stdout == ""
       changed_when: false
 
-    - name: Check Elasticsearch received Wazuh alerts (last 5 min)
+    - name: Get Wazuh API token
       ansible.builtin.uri:
-        url: "http://192.168.10.202:9200/wazuh-alerts-*/_search"
+        url: "https://127.0.0.1:55000/security/user/authenticate"
         method: POST
-        headers:
-          Content-Type: application/json
-        body_format: json
-        body:
-          query:
-            bool:
-              must:
-                - range:
-                    "@timestamp":
-                      gte: "now-5m"
-          size: 1
+        url_username: wazuh
+        url_password: wazuh
+        force_basic_auth: true
+        validate_certs: false
         status_code: 200
-      register: wazuh_alerts
-      failed_when: wazuh_alerts.json.hits.total.value == 0
+      register: wazuh_auth
+
+    - name: Check Wazuh Windows agents active
+      ansible.builtin.uri:
+        url: "https://127.0.0.1:55000/agents?status=active&os.platform=windows"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ wazuh_auth.json.data.token }}"
+        validate_certs: false
+        status_code: 200
+      register: wazuh_agents
+      failed_when: wazuh_agents.json.data.total_affected_items == 0
 
     - name: "DETECTION REPORT"
       ansible.builtin.debug:
         msg:
           - "JNDI probe HTTP status : {{ probe_result.status }}"
-          - "Zeek detection log     : {{ zeek_detection.stdout | default('NOT DETECTED') }}"
-          - "Wazuh alerts (5m)      : {{ wazuh_alerts.json.hits.total.value }}"
+          - "Zeek notice.log        : {{ zeek_detection.stdout | default('NOT DETECTED') }}"
+          - "Wazuh active Windows   : {{ wazuh_agents.json.data.total_affected_items }}"

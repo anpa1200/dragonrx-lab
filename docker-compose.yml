@@ -96,6 +96,7 @@ services:
       target_net:
         ipv4_address: 192.168.10.200
     ports:
+      - "1514:1514/tcp"
       - "1514:1514/udp"
       - "1515:1515"
       - "55000:55000"
@@ -146,9 +147,10 @@ services:
     network_mode: host
     volumes:
       - ./siem/zeek/local.zeek:/usr/local/zeek/share/zeek/site/local.zeek:ro
+      - ./siem/zeek/entrypoint.sh:/entrypoint.sh:ro
       - zeek_logs:/usr/local/zeek/logs
     cap_add: [NET_ADMIN, NET_RAW]
-    command: zeek -i any /usr/local/zeek/share/zeek/site/local.zeek
+    command: ["/bin/sh", "/entrypoint.sh"]
 
 volumes:
   wazuh_data:

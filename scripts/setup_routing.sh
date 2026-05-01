@@ -51,6 +51,13 @@ info "Setting promiscuous mode on bridges..."
 sudo ip link set "$ATK_BRIDGE" promisc on
 sudo ip link set "$TGT_BRIDGE" promisc on
 
+# Disable TX checksum offloading on the target bridge so Docker containers
+# emit packets with valid TCP checksums. Without this, Windows VMs silently
+# drop SYN-ACKs from Docker containers (checksum placeholder = 0x0000),
+# causing Wazuh agent enrollment (port 1515) and data (port 1514) to hang.
+info "Disabling TX checksum offloading on target bridge (fixes Windows ↔ container TCP)..."
+sudo ethtool -K "$TGT_BRIDGE" tx off 2>/dev/null || true
+
 # ── Remove stale vboxnet0 route (conflicts with Docker bridge route) ──────────
 # vboxnet0 may persist after prior host-only deployments; its kernel route for
 # 192.168.10.0/24 shadows the Docker bridge route, breaking host→container reach.

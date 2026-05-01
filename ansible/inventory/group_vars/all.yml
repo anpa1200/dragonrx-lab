@@ -16,6 +16,9 @@ lab_users:
     spn: "MSSQLSvc/fs01.novatech.local:1433"
     member_of: "Backup Operators"
 
-wazuh_manager_ip: 192.168.10.200
+# VMs cannot reach the Wazuh container IP (192.168.10.200) directly due to
+# VirtualBox bridge FDB behavior. Use the host bridge IP (192.168.10.254)
+# instead — docker-proxy forwards TCP 1514/1515 to the container.
+wazuh_manager_ip: 192.168.10.254
 sysmon_version: "15.0"
 sysmon_sha256: ""
