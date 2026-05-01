@@ -1,7 +1,7 @@
-<Sysmon schemaversion="4.82">
+<Sysmon schemaversion="4.91">
   <EventFiltering>
 
-    <RuleGroup name="ProcessCreate" groupRelation="or">
+    <RuleGroup name="" groupRelation="or">
       <ProcessCreate onmatch="include">
         <Image condition="contains">cmd.exe</Image>
         <Image condition="contains">powershell.exe</Image>
@@ -21,7 +21,7 @@
       </ProcessCreate>
     </RuleGroup>
 
-    <RuleGroup name="NetworkConnect" groupRelation="or">
+    <RuleGroup name="" groupRelation="or">
       <NetworkConnect onmatch="include">
         <Image condition="contains">java.exe</Image>
         <Image condition="contains">powershell.exe</Image>
@@ -31,24 +31,19 @@
       </NetworkConnect>
     </RuleGroup>
 
-    <!-- groupRelation="and": ALL conditions must match.                                     -->
-    <!-- "or" here would fire on EVERY unsigned DLL anywhere on the system — massive noise. -->
-    <RuleGroup name="ImageLoad" groupRelation="and">
+    <RuleGroup name="" groupRelation="or">
       <ImageLoad onmatch="include">
         <ImageLoaded condition="contains">jvm.dll</ImageLoaded>
-        <ImageLoaded condition="begins with" not="true">C:\Windows\</ImageLoaded>
-        <ImageLoaded condition="begins with" not="true">C:\Program Files\</ImageLoaded>
-        <Signed condition="is">false</Signed>
       </ImageLoad>
     </RuleGroup>
 
-    <RuleGroup name="ProcessAccess" groupRelation="or">
+    <RuleGroup name="" groupRelation="or">
       <ProcessAccess onmatch="include">
         <TargetImage condition="ends with">lsass.exe</TargetImage>
       </ProcessAccess>
     </RuleGroup>
 
-    <RuleGroup name="FileCreate" groupRelation="or">
+    <RuleGroup name="" groupRelation="or">
       <FileCreate onmatch="include">
         <TargetFilename condition="contains">\Tasks\</TargetFilename>
         <TargetFilename condition="ends with">.jsp</TargetFilename>
@@ -56,7 +51,7 @@
       </FileCreate>
     </RuleGroup>
 
-    <RuleGroup name="DnsQuery" groupRelation="or">
+    <RuleGroup name="" groupRelation="or">
       <DnsQuery onmatch="include">
         <QueryName condition="contains">oracle-cdn</QueryName>
         <QueryName condition="contains">attacker-infra</QueryName>

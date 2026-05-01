@@ -138,7 +138,7 @@ if [[ $SKIP_ANSIBLE -eq 0 ]]; then
   step "Step 6: Ansible provisioning"
   info "Phase 6a: Installing Galaxy collections..."
   cd ansible
-  ansible-galaxy collection install -r requirements.yml -q
+  ansible-galaxy collection install -r requirements.yml
 
   info "Phase 6b: Running deploy playbook..."
   ansible-playbook playbooks/deploy.yml -v
@@ -175,7 +175,7 @@ ${GRN}${BOLD}╔═════════════════════�
   Attack run  : ${CYN}make attack${NC}
 
   ${BOLD}Target network:${NC}
-  WEB01  192.168.10.100  Tomcat + Log4j 2.14.1  :8443
+  WEB01  192.168.10.100  Spring Boot + Log4j 2.14.1  :8080
   DC01   192.168.10.10   Windows Server 2019 AD
   FS01   192.168.10.20   Research + Manufacturing shares
   WS01   192.168.10.50   Windows 10 (jsmith)

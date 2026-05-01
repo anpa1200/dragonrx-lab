@@ -5,6 +5,22 @@
     port: 389
     timeout: 300
 
+- name: Set DNS to DC01 on target_net NIC (required for domain join)
+  ansible.windows.win_powershell:
+    script: |
+      $defIdx = (Get-NetRoute -DestinationPrefix '0.0.0.0/0' |
+                 Sort-Object RouteMetric | Select-Object -First 1).InterfaceIndex
+      $nic2 = Get-NetAdapter |
+              Where-Object { $_.InterfaceIndex -ne $defIdx -and $_.Status -eq 'Up' } |
+              Select-Object -First 1
+      if ($nic2) {
+          Set-DnsClientServerAddress -InterfaceIndex $nic2.InterfaceIndex `
+              -ServerAddresses "{{ domain_controller_ip }}"
+          Write-Output "DNS set to {{ domain_controller_ip }} on $($nic2.Name)"
+      } else {
+          throw "NIC2 not found — cannot set DNS"
+      }
+
 - name: Join domain
   microsoft.ad.membership:
     dns_domain_name: "{{ domain_name }}"
@@ -17,6 +33,19 @@
   ansible.windows.win_reboot:
     reboot_timeout: 300
   when: domain_join.changed
+
+- name: Enable SMB and set target_net NIC to Private profile
+  ansible.windows.win_powershell:
+    script: |
+      Enable-NetFirewallRule -DisplayGroup "File and Printer Sharing"
+      $defIdx = (Get-NetRoute -DestinationPrefix '0.0.0.0/0' |
+                 Sort-Object RouteMetric | Select-Object -First 1).InterfaceIndex
+      $nic2 = Get-NetAdapter |
+              Where-Object { $_.InterfaceIndex -ne $defIdx -and $_.Status -eq 'Up' } |
+              Select-Object -First 1
+      if ($nic2) {
+          Set-NetConnectionProfile -InterfaceIndex $nic2.InterfaceIndex -NetworkCategory Private -ErrorAction SilentlyContinue
+      }
 
 - name: Add jsmith as local administrator
   ansible.windows.win_group_membership:

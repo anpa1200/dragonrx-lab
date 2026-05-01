@@ -6,20 +6,32 @@
     state: present
   register: ad_feature
 
+- name: Reboot after AD DS install
+  ansible.windows.win_reboot:
+    reboot_timeout: 300
+    post_reboot_delay: 30
+  when: ad_feature.reboot_required
+
+- name: Set local Administrator password (required before DC promotion)
+  ansible.windows.win_user:
+    name: Administrator
+    password: "{{ domain_admin_password }}"
+    state: present
+
 - name: Promote to Domain Controller
   microsoft.ad.domain:
     dns_domain_name: "{{ domain_name }}"
     domain_netbios_name: "{{ domain_netbios }}"
     safe_mode_password: "{{ safe_mode_password }}"
-    state: domain_controller
+    reboot: false
   register: domain_result
-  when: ad_feature.changed or ad_feature.reboot_required
 
 - name: Reboot after domain promotion
   ansible.windows.win_reboot:
-    reboot_timeout: 600
-    post_reboot_delay: 60
-  when: domain_result.changed or domain_result.reboot_required
+    reboot_timeout: 1200
+    post_reboot_delay: 120
+    connect_timeout: 60
+  when: domain_result.changed or domain_result.reboot_required | default(false)
 
 - name: Wait for AD web services
   ansible.windows.win_wait_for:
@@ -39,16 +51,29 @@
   loop: "{{ lab_users }}"
 
 - name: Set SPN on svc_backup (Kerberoastable)
-  ansible.windows.win_command: >
-    setspn -A {{ item.spn }} {{ domain_netbios }}\{{ item.name }}
+  ansible.windows.win_powershell:
+    script: |
+      $spn  = "{{ item.spn }}"
+      $acct = "{{ domain_netbios }}\{{ item.name }}"
+      $existing = & setspn -L "{{ item.name }}" 2>&1
+      if ($existing -notmatch [regex]::Escape($spn)) {
+          & setspn -S $spn $acct
+          Write-Output "SPN set: $spn on $acct"
+      } else {
+          Write-Output "SPN already present: $spn"
+      }
   loop: "{{ lab_users | selectattr('spn', 'defined') | list }}"
 
 - name: Add svc_backup to Backup Operators
-  microsoft.ad.group:
-    name: "Backup Operators"
-    members:
-      add: ["svc_backup"]
-    state: present
+  ansible.windows.win_powershell:
+    script: |
+      $members = (Get-ADGroupMember "Backup Operators").SamAccountName
+      if ($members -notcontains "svc_backup") {
+          Add-ADGroupMember -Identity "Backup Operators" -Members "svc_backup"
+          Write-Output "Added svc_backup to Backup Operators"
+      } else {
+          Write-Output "svc_backup already in Backup Operators"
+      }
 
 - name: Enable Directory Service Access auditing (required for DCSync EID 4662)
   ansible.windows.win_command: >
@@ -57,14 +82,14 @@
 - name: Set SACL on domain NC for DCSync detection
   ansible.windows.win_powershell:
     script: |
-      $rootDSE  = [ADSI]"LDAP://RootDSE"
+      $rootDSE   = [ADSI]"LDAP://RootDSE"
       $defaultNC = $rootDSE.defaultNamingContext
-      $acl      = (Get-Acl "AD:\$defaultNC")
-      $identity = [System.Security.Principal.NTAccount]"Everyone"
-      $adRights = [System.DirectoryServices.ActiveDirectoryRights]"ExtendedRight"
-      $type     = [System.Security.AccessControl.AccessControlType]"Success"
-      $inherit  = [System.DirectoryServices.ActiveDirectorySecurityInheritance]"All"
-      $guidAll  = [guid]"1131f6ad-9c07-11d1-f79f-00c04fc2dcd2"
+      $acl       = (Get-Acl "AD:\$defaultNC")
+      $identity  = [System.Security.Principal.NTAccount]"Everyone"
+      $adRights  = [System.DirectoryServices.ActiveDirectoryRights]"ExtendedRight"
+      $type      = [System.Security.AccessControl.AccessControlType]"Success"
+      $inherit   = [System.DirectoryServices.ActiveDirectorySecurityInheritance]"All"
+      $guidAll   = [guid]"1131f6ad-9c07-11d1-f79f-00c04fc2dcd2"
       $ace = New-Object System.DirectoryServices.ActiveDirectoryAuditRule(
           $identity, $adRights, $type, $guidAll, $inherit)
       $acl.AddAuditRule($ace)

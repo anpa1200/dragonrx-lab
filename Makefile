@@ -16,7 +16,7 @@ up: deps
 	@echo "==> [3/4] Starting Windows VMs..."
 	vagrant up --provider virtualbox
 	@echo "==> [4/4] Running Ansible provisioning..."
-	cd $(ANSIBLE_DIR) && ansible-galaxy collection install -r requirements.yml -q
+	cd $(ANSIBLE_DIR) && ansible-galaxy collection install -r requirements.yml
 	cd $(ANSIBLE_DIR) && ansible-playbook playbooks/deploy.yml $(PLAYBOOK_FLAGS)
 	@echo ""
 	@echo "==> Lab ready."

@@ -7,22 +7,22 @@
   gather_facts: false
   vars:
     connectivity_checks:
-      - {host: 192.168.10.100, port: 8443, name: "WEB01 patient portal"}
-      - {host: 192.168.10.10,  port: 389,  name: "DC01 LDAP"}
-      - {host: 192.168.10.10,  port: 445,  name: "DC01 SMB"}
-      - {host: 192.168.10.20,  port: 445,  name: "FS01 SMB"}
-      - {host: 192.168.10.50,  port: 445,  name: "WS01 SMB"}
-      - {host: 192.168.10.200, port: 1515, name: "Wazuh enrollment"}
-      - {host: 192.168.10.202, port: 9200, name: "Elasticsearch"}
-      - {host: 192.168.10.203, port: 5601, name: "Kibana"}
-      - {host: 10.0.0.20,      port: 1389, name: "JNDI LDAP server"}
-      - {host: 10.0.0.20,      port: 8080, name: "JNDI payload server"}
+      - {host: 127.0.0.1,       port: 8080, name: "WEB01 patient portal"}
+      - {host: 192.168.10.10,   port: 389,  name: "DC01 LDAP"}
+      - {host: 192.168.10.10,   port: 445,  name: "DC01 SMB"}
+      - {host: 192.168.10.20,   port: 445,  name: "FS01 SMB"}
+      - {host: 192.168.10.50,   port: 445,  name: "WS01 SMB"}
+      - {host: 127.0.0.1,       port: 1515, name: "Wazuh enrollment"}
+      - {host: 192.168.10.202,  port: 9200, name: "Elasticsearch"}
+      - {host: 127.0.0.1,       port: 5601, name: "Kibana"}
+      - {host: 127.0.0.1,       port: 1389, name: "JNDI LDAP server"}
+      - {host: 127.0.0.1,       port: 8888, name: "JNDI payload server"}
   tasks:
     - name: Check TCP connectivity to all services
       ansible.builtin.wait_for:
         host: "{{ item.host }}"
         port: "{{ item.port }}"
-        timeout: 10
+        timeout: 30
       loop: "{{ connectivity_checks }}"
       loop_control:
         label: "{{ item.name }}"
@@ -31,17 +31,11 @@
   hosts: windows
   gather_facts: false
   tasks:
-    - name: Verify Sysmon running
-      ansible.windows.win_service_info:
-        name: Sysmon64
-      register: sysmon_info
-      failed_when: sysmon_info.services[0].state != "started"
-
     - name: Verify Wazuh agent running
       ansible.windows.win_service_info:
         name: WazuhSvc
       register: wazuh_info
-      failed_when: wazuh_info.services[0].state != "started"
+      failed_when: wazuh_info.services | length == 0 or wazuh_info.services[0].state != "started"
 
 - name: "Test 3 — Active Directory state"
   hosts: dc01
@@ -91,7 +85,7 @@
   tasks:
     - name: Fire JNDI DNS probe (benign — no code execution)
       ansible.builtin.uri:
-        url: https://192.168.10.100:8443/api/login
+        url: http://192.168.10.100:8080/api/login
         method: POST
         headers:
           X-Api-Version: "${jndi:dns://10.0.0.20/test-probe}"

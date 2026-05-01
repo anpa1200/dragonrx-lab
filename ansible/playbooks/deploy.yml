@@ -9,50 +9,68 @@
   tasks:
     - name: Wait for Wazuh manager API
       ansible.builtin.wait_for:
-        host: 192.168.10.200
+        host: 127.0.0.1
         port: 55000
         timeout: 120
 
-    - name: Wait for Elasticsearch
+    - name: Wait for Kibana (implicitly confirms Elasticsearch)
       ansible.builtin.uri:
-        url: http://192.168.10.202:9200/_cluster/health
-        status_code: 200
-      register: elastic_health
-      until: elastic_health.json.status != "red"
-      retries: 20
-      delay: 10
-
-    - name: Wait for Kibana
-      ansible.builtin.uri:
-        url: http://192.168.10.203:5601/api/status
+        url: http://localhost:5601/api/status
         status_code: 200
       register: kibana_health
       until: kibana_health.status == 200
-      retries: 20
+      retries: 30
       delay: 10
 
 - name: "Phase 2 — Configure DC01 (Active Directory)"
   hosts: dc01
   gather_facts: true
+  pre_tasks:
+    - name: Set computer name to DC01
+      ansible.windows.win_hostname:
+        name: DC01
+      register: dc01_name
+    - name: Reboot if hostname changed
+      ansible.windows.win_reboot:
+        reboot_timeout: 300
+        post_reboot_delay: 30
+      when: dc01_name.reboot_required
   roles:
     - dc01
-    - sysmon
     - wazuh_agent
 
 - name: "Phase 3 — Configure FS01 (File Server)"
   hosts: fs01
   gather_facts: true
+  pre_tasks:
+    - name: Set computer name to FS01
+      ansible.windows.win_hostname:
+        name: FS01
+      register: fs01_name
+    - name: Reboot if hostname changed
+      ansible.windows.win_reboot:
+        reboot_timeout: 300
+        post_reboot_delay: 30
+      when: fs01_name.reboot_required
   roles:
     - fs01
-    - sysmon
     - wazuh_agent
 
 - name: "Phase 4 — Configure WS01 (Workstation)"
   hosts: ws01
   gather_facts: true
+  pre_tasks:
+    - name: Set computer name to WS01
+      ansible.windows.win_hostname:
+        name: WS01
+      register: ws01_name
+    - name: Reboot if hostname changed
+      ansible.windows.win_reboot:
+        reboot_timeout: 300
+        post_reboot_delay: 30
+      when: ws01_name.reboot_required
   roles:
     - ws01
-    - sysmon
     - wazuh_agent
 
 - name: "Phase 5 — Configure SIEM indexes"
@@ -61,7 +79,7 @@
   tasks:
     - name: Create Kibana index pattern for Wazuh
       ansible.builtin.uri:
-        url: http://192.168.10.203:5601/api/saved_objects/index-pattern
+        url: http://localhost:5601/api/saved_objects/index-pattern
         method: POST
         headers:
           Content-Type: application/json
@@ -75,7 +93,7 @@
 
     - name: Create Kibana index pattern for Zeek
       ansible.builtin.uri:
-        url: http://192.168.10.203:5601/api/saved_objects/index-pattern
+        url: http://localhost:5601/api/saved_objects/index-pattern
         method: POST
         headers:
           Content-Type: application/json
