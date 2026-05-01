@@ -2,9 +2,10 @@
 # deploy.sh — Full DragonRx lab deployment in a single script.
 # Equivalent to 'make up' but self-contained, with richer output and timing.
 #
-# Usage: bash scripts/deploy.sh [--skip-vms] [--skip-ansible] [--no-test]
+# Usage: bash scripts/deploy.sh [--destroy] [--skip-vms] [--skip-ansible] [--no-test]
 #
 # Options:
+#   --destroy       Tear down all existing state before deploying (vagrant destroy + docker down -v)
 #   --skip-vms      Skip vagrant up (reuse already-running Windows VMs)
 #   --skip-ansible  Skip Ansible provisioning (reuse already-provisioned VMs)
 #   --no-test       Skip final validation suite
@@ -28,9 +29,10 @@ warn()  { echo -e "${YEL}[!]${NC} $*"; }
 error() { echo -e "${RED}[X]${NC} $*" >&2; exit 1; }
 timer() { echo -e "${CYN}[t]${NC} elapsed: $(( SECONDS / 60 ))m$(( SECONDS % 60 ))s"; }
 
-SKIP_VMS=0; SKIP_ANSIBLE=0; RUN_TEST=1
+DESTROY=0; SKIP_VMS=0; SKIP_ANSIBLE=0; RUN_TEST=1
 for arg in "$@"; do
   case $arg in
+    --destroy)      DESTROY=1 ;;
     --skip-vms)     SKIP_VMS=1 ;;
     --skip-ansible) SKIP_ANSIBLE=1 ;;
     --no-test)      RUN_TEST=0 ;;
@@ -50,6 +52,20 @@ ${BLU}${BOLD}╔═════════════════════�
 ╚═══════════════════════════════════════════════════════╝${NC}
 Lab directory: ${LAB_DIR}
 "
+
+# ── Teardown (--destroy) ──────────────────────────────────────────────────────
+if [[ $DESTROY -eq 1 ]]; then
+  step "Teardown: destroying existing lab state"
+  if vagrant status 2>/dev/null | grep -qE "running|saved|poweroff"; then
+    info "Destroying Vagrant VMs..."
+    vagrant destroy -f
+  else
+    info "No running VMs to destroy"
+  fi
+  info "Stopping Docker services and removing volumes..."
+  docker compose down -v
+  info "Teardown complete"
+fi
 
 # ── Step 0: Prerequisites ─────────────────────────────────────────────────────
 step "Step 0: Checking prerequisites"
