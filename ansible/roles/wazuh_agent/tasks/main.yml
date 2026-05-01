@@ -1,4 +1,24 @@
 ---
+# Remove any stale agent record for this hostname so re-enrollment isn't blocked
+# by Wazuh's "not disconnected long enough" guard after container recreation.
+- name: Remove stale Wazuh agent record (idempotent pre-enroll cleanup)
+  delegate_to: localhost
+  ansible.builtin.shell: |
+    TOKEN=$(curl -sk -u wazuh:wazuh -X POST \
+      https://127.0.0.1:55000/security/user/authenticate \
+      | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['token'])")
+    ID=$(curl -sk -H "Authorization: Bearer $TOKEN" \
+      "https://127.0.0.1:55000/agents?name={{ inventory_hostname }}" \
+      | python3 -c "import sys,json; items=json.load(sys.stdin)['data']['affected_items']; print(items[0]['id'] if items else '')")
+    if [ -n "$ID" ]; then
+      curl -sk -X DELETE -H "Authorization: Bearer $TOKEN" \
+        "https://127.0.0.1:55000/agents?agents_list=$ID&status=all&older_than=0s" >/dev/null
+      echo "Removed stale agent $ID for {{ inventory_hostname }}"
+    else
+      echo "No stale agent record for {{ inventory_hostname }}"
+    fi
+  changed_when: false
+
 - name: Ensure C:\Temp exists
   ansible.windows.win_file:
     path: C:\Temp

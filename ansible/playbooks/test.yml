@@ -106,31 +106,24 @@
       failed_when: zeek_detection.stdout == ""
       changed_when: false
 
-    - name: Get Wazuh API token
-      ansible.builtin.uri:
-        url: "https://127.0.0.1:55000/security/user/authenticate"
-        method: POST
-        url_username: wazuh
-        url_password: wazuh
-        force_basic_auth: true
-        validate_certs: false
-        status_code: 200
-      register: wazuh_auth
-
-    - name: Check Wazuh Windows agents active
-      ansible.builtin.uri:
-        url: "https://127.0.0.1:55000/agents?status=active&os.platform=windows"
-        method: GET
-        headers:
-          Authorization: "Bearer {{ wazuh_auth.json.data.token }}"
-        validate_certs: false
-        status_code: 200
+    - name: Wait for Wazuh Windows agents to enroll (up to 3 min after fresh deploy)
+      ansible.builtin.shell: |
+        TOKEN=$(curl -sk -u wazuh:wazuh -X POST \
+          https://127.0.0.1:55000/security/user/authenticate \
+          | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['token'])")
+        curl -sk -H "Authorization: Bearer $TOKEN" \
+          "https://127.0.0.1:55000/agents?status=active&os.platform=windows" \
+          | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['total_affected_items'])"
       register: wazuh_agents
-      failed_when: wazuh_agents.json.data.total_affected_items == 0
+      until: wazuh_agents.stdout | int > 0
+      retries: 12
+      delay: 15
+      changed_when: false
+      failed_when: wazuh_agents.stdout | int == 0
 
     - name: "DETECTION REPORT"
       ansible.builtin.debug:
         msg:
           - "JNDI probe HTTP status : {{ probe_result.status }}"
           - "Zeek notice.log        : {{ zeek_detection.stdout | default('NOT DETECTED') }}"
-          - "Wazuh active Windows   : {{ wazuh_agents.json.data.total_affected_items }}"
+          - "Wazuh active Windows   : {{ wazuh_agents.stdout }}"
