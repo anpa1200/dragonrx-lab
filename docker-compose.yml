@@ -69,7 +69,10 @@ services:
   # ── TARGET SIDE ─────────────────────────────────────────────────────
 
   web01:
-    image: ghcr.io/christophetd/log4shell-vulnerable-app:latest
+    build:
+      context: ./targets/web01
+      dockerfile: Dockerfile.log4shell
+    image: dragonrx_web01:local
     container_name: dragonrx_web01
     hostname: web01
     networks:
@@ -84,7 +87,7 @@ services:
       - LDAP_USER=svc_ldap
       - LDAP_PASS=NovaTech2021!
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- --header='X-Api-Version: health' http://localhost:8080/ >/dev/null 2>&1 || exit 1"]
+      test: ["CMD-SHELL", "curl -sf -H 'X-Api-Version: health' http://localhost:8080/ >/dev/null 2>&1 || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 5
