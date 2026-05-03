@@ -32,7 +32,7 @@ RUN pip3 install --no-cache-dir --break-system-packages shodan
 
 # Sliver client binary (matches server version in dragonrx_c2)
 # Downloaded at build time so operators can run `sliver-client` from Kali
-ARG SLIVER_VERSION=v1.5.42
+ARG SLIVER_VERSION=v1.7.3
 RUN curl -fsSL \
     "https://github.com/BishopFox/sliver/releases/download/${SLIVER_VERSION}/sliver-client_linux" \
     -o /usr/local/bin/sliver-client \
