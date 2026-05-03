@@ -61,6 +61,15 @@
     state: present
   loop: "{{ lab_users }}"
 
+- name: Enable RC4 on svc_backup (required for Kerberoasting etype 23)
+  ansible.windows.win_powershell:
+    script: |
+      # Windows Server 2019 patched builds disable RC4 by default.
+      # Explicitly allow RC4+AES128+AES256 so impacket-GetUserSPNs gets an
+      # RC4-encrypted TGS (hashcat mode 13100, cracks faster than AES-256).
+      Set-ADUser svc_backup -KerberosEncryptionType RC4,AES128,AES256
+      Write-Output "svc_backup Kerberos encryption types: RC4,AES128,AES256"
+
 - name: Set SPN on svc_backup (Kerberoastable)
   ansible.windows.win_powershell:
     script: |
@@ -75,15 +84,27 @@
       }
   loop: "{{ lab_users | selectattr('spn', 'defined') | list }}"
 
-- name: Add svc_backup to Backup Operators
+- name: Add svc_backup to Backup Operators and local Administrators
   ansible.windows.win_powershell:
     script: |
+      # Backup Operators: grants SeBackupPrivilege (file ACL bypass)
       $members = (Get-ADGroupMember "Backup Operators").SamAccountName
       if ($members -notcontains "svc_backup") {
           Add-ADGroupMember -Identity "Backup Operators" -Members "svc_backup"
           Write-Output "Added svc_backup to Backup Operators"
       } else {
           Write-Output "svc_backup already in Backup Operators"
+      }
+      # Local Administrators: required for impacket-secretsdump -use-vss to start
+      # RemoteRegistry remotely. Models the common real-world misconfiguration where
+      # backup service accounts are over-privileged on the servers they back up.
+      # Note: Add-LocalGroupMember does not work on DCs (no local SAM) — use net localgroup.
+      $members = & net localgroup Administrators 2>&1
+      if ($members -notmatch "svc_backup") {
+          & net localgroup Administrators "NOVATECH\svc_backup" /add
+          Write-Output "Added svc_backup to local Administrators"
+      } else {
+          Write-Output "svc_backup already in local Administrators"
       }
 
 - name: Enable Directory Service Access auditing (required for DCSync EID 4662)
