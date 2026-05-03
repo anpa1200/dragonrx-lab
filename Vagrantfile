@@ -64,6 +64,10 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
         vb.gui    = false
         vb.customize ["modifyvm", :id, "--nested-hw-virt", "on"]
         vb.customize ["modifyvm", :id, "--clipboard",      "bidirectional"]
+        # allow-all promiscuous mode on NIC2 (bridged to Docker target_net bridge)
+        # Required so the VM forwards frames from Docker containers — without this
+        # VirtualBox drops frames whose source MAC doesn't match the VM's own NIC.
+        vb.customize ["modifyvm", :id, "--nicpromisc2",    "allow-all"]
       end
 
       # Set static IP on NIC2 (bridged adapter) without triggering a reboot.

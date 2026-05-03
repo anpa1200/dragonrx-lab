@@ -1,4 +1,12 @@
 ---
+- name: Disable TCP checksum and LSO offloading on target_net NIC (Ethernet 2)
+  ansible.windows.win_powershell:
+    script: |
+      $nic = "Ethernet 2"
+      Disable-NetAdapterChecksumOffload -Name $nic -TcpIPv4 -UdpIPv4 -TcpIPv6 -UdpIPv6 -ErrorAction SilentlyContinue
+      Disable-NetAdapterLso             -Name $nic -IPv4 -ErrorAction SilentlyContinue
+      Write-Output "NIC offloading disabled on $nic"
+
 - name: Wait for DC01 LDAP
   ansible.windows.win_wait_for:
     host: "{{ domain_controller_ip }}"

@@ -1,4 +1,15 @@
 ---
+- name: Disable TCP checksum and LSO offloading on target_net NIC (Ethernet 2)
+  ansible.windows.win_powershell:
+    script: |
+      # Virtual NICs defer checksum computation to "hardware" that doesn't exist
+      # in a VirtualBox bridge stack. Linux receives packets with invalid TCP
+      # checksums and silently drops them. Force software computation on both sides.
+      $nic = "Ethernet 2"
+      Disable-NetAdapterChecksumOffload -Name $nic -TcpIPv4 -UdpIPv4 -TcpIPv6 -UdpIPv6 -ErrorAction SilentlyContinue
+      Disable-NetAdapterLso             -Name $nic -IPv4 -ErrorAction SilentlyContinue
+      Write-Output "NIC offloading disabled on $nic"
+
 - name: Install AD DS role
   ansible.windows.win_feature:
     name: AD-Domain-Services
@@ -95,6 +106,20 @@
       $acl.AddAuditRule($ace)
       Set-Acl "AD:\$defaultNC" $acl
       Write-Output "SACL configured for DCSync detection (EID 4662)"
+
+- name: Open lab ports through Windows Firewall (all profiles)
+  ansible.windows.win_powershell:
+    script: |
+      $ports = @(389, 445, 636, 3389, 5985)
+      $rule  = Get-NetFirewallRule -Name "Lab-LDAP-SMB" -ErrorAction SilentlyContinue
+      if (-not $rule) {
+          New-NetFirewallRule -Name "Lab-LDAP-SMB" -DisplayName "Lab LDAP SMB" `
+              -Protocol TCP -LocalPort $ports -Action Allow `
+              -Direction Inbound -Profile Any
+          Write-Output "Firewall rule created"
+      } else {
+          Write-Output "Firewall rule already exists"
+      }
 
 - name: Set DNS forwarder
   ansible.windows.win_powershell:

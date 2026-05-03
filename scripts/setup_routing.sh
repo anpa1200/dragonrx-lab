@@ -51,12 +51,42 @@ info "Setting promiscuous mode on bridges..."
 sudo ip link set "$ATK_BRIDGE" promisc on
 sudo ip link set "$TGT_BRIDGE" promisc on
 
-# Disable TX checksum offloading on the target bridge so Docker containers
-# emit packets with valid TCP checksums. Without this, Windows VMs silently
-# drop SYN-ACKs from Docker containers (checksum placeholder = 0x0000),
-# causing Wazuh agent enrollment (port 1515) and data (port 1514) to hang.
-info "Disabling TX checksum offloading on target bridge (fixes Windows ↔ container TCP)..."
+# ── TCP checksum offloading fix (Docker ↔ VirtualBox bridged VMs) ────────────
+#
+# Root cause: virtual NICs on both sides defer TCP checksum computation to
+# "hardware" that doesn't exist in a virtual bridge stack.
+#
+#   Docker containers (Linux veth): the kernel marks outgoing TCP packets with
+#   a partial pseudo-header checksum and expects the NIC to fill in the rest.
+#   Through a virtual bridge no hardware ever completes it — Windows receives
+#   the SYN with checksum 0x0000 and silently drops it (no RST).
+#
+#   VirtualBox Windows NICs: same problem in reverse — DC01/FS01/WS01 defer
+#   their TX checksums to the virtual 82540EM; Linux receives SYN-ACKs with
+#   invalid checksums and drops them silently.
+#
+#   ICMP ping works because the kernel always computes ICMP checksums in
+#   software (raw socket path), never deferring to hardware.
+#
+# Fix: force software checksum computation on every interface in the path.
+#   - bridge interface tx off        (locally-originated bridge traffic)
+#   - host-side veths tx off         (forwarded traffic from containers)
+#   - container-side eth1 tx off     (source of TCP segments — most critical)
+#   - Windows NIC offloading disabled via Ansible provisioning (see roles/)
+#
+info "Disabling TX checksum offloading (Docker ↔ Windows VM TCP fix)..."
 sudo ethtool -K "$TGT_BRIDGE" tx off 2>/dev/null || true
+
+for veth in $(bridge link show "$TGT_BRIDGE" 2>/dev/null | grep -oP 'dev \K\S+'); do
+    sudo ethtool -K "$veth" tx off 2>/dev/null || true
+done
+
+# Use nsenter so we don't rely on ethtool being installed inside each container
+for ctr in dragonrx_web01 dragonrx_kali; do
+    pid=$(docker inspect -f '{{.State.Pid}}' "$ctr" 2>/dev/null)
+    [[ -n "$pid" && "$pid" != "0" ]] && \
+        sudo nsenter -t "$pid" -n ethtool -K eth1 tx off 2>/dev/null || true
+done
 
 # ── Remove stale vboxnet0 route (conflicts with Docker bridge route) ──────────
 # vboxnet0 may persist after prior host-only deployments; its kernel route for
