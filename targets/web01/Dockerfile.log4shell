@@ -4,6 +4,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV CATALINA_HOME=/opt/tomcat
 ENV JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64
 ENV PATH="${CATALINA_HOME}/bin:${JAVA_HOME}/bin:${PATH}"
+# Re-enable remote class loading — required for CVE-2021-44228 exploitation on JDK 8u191+
+ENV JAVA_OPTS="-Dcom.sun.jndi.ldap.object.trustURLCodebase=true -Dcom.sun.jndi.rmi.object.trustURLCodebase=true"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     openjdk-8-jdk wget curl net-tools iputils-ping \
@@ -27,8 +29,9 @@ RUN mkdir -p /tmp/webapp/WEB-INF/lib && \
 
 # Copy webapp sources (index.jsp + WEB-INF/web.xml) and package as WAR
 # Tomcat extracts ROOT.war at startup → real writable webroot at /opt/tomcat/webapps/ROOT/
-COPY webapp/index.jsp        /tmp/webapp/index.jsp
-COPY webapp/WEB-INF/web.xml  /tmp/webapp/WEB-INF/web.xml
+COPY webapp/index.jsp                         /tmp/webapp/index.jsp
+COPY webapp/WEB-INF/web.xml                   /tmp/webapp/WEB-INF/web.xml
+COPY webapp/WEB-INF/classes/log4j2.xml        /tmp/webapp/WEB-INF/classes/log4j2.xml
 RUN cd /tmp/webapp && jar cvf /opt/tomcat/webapps/ROOT.war . && rm -rf /tmp/webapp
 
 EXPOSE 8080
