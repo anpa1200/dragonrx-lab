@@ -25,8 +25,10 @@ FROM alpine:3.19
 COPY --from=builder /out/ /built/
 
 # -n: skip if target already exists (idempotent across restarts)
+# chmod 755 ensures the host user can write alongside these files (e.g. docker cp)
 CMD ["sh", "-c", \
      "mkdir -p /output/rxphage && \
       cp -n /built/rxphage     /output/rxphage/rxphage && \
       cp -n /built/rxphage.exe /output/rxphage/rxphage.exe && \
+      chmod -R 755 /output/rxphage && \
       echo '[rxphage_builder] binaries deployed to /output/rxphage/'"]
