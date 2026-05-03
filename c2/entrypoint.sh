@@ -1,7 +1,7 @@
 #!/bin/sh
 set -e
 
-CONFIG_DIR=/root/.sliver/configs
+CONFIG_DIR=/root/.sliver-client/configs
 mkdir -p "$CONFIG_DIR"
 
 # Start server daemon in background
