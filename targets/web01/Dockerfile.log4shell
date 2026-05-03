@@ -9,6 +9,7 @@ ENV JAVA_OPTS="-Dcom.sun.jndi.ldap.object.trustURLCodebase=true -Dcom.sun.jndi.r
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     openjdk-8-jdk wget curl net-tools iputils-ping \
+    file cron \
     && rm -rf /var/lib/apt/lists/*
 
 # Tomcat 9.0.54 — standalone deployment with real writable webroot
