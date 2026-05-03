@@ -1,0 +1,42 @@
+FROM kalilinux/kali-rolling:latest
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Core utilities
+    curl wget git vim less procps iputils-ping dnsutils \
+    net-tools iproute2 iptables ca-certificates \
+    python3 python3-pip python3-venv \
+    rlwrap jq unzip p7zip-full \
+    # Recon
+    nmap whatweb \
+    # Exploitation / post-exploitation (Kali metapackage subsets)
+    metasploit-framework \
+    # Impacket suite (secretsdump, GetUserSPNs, psexec, etc.)
+    impacket-scripts python3-impacket \
+    # Password cracking
+    hashcat \
+    # SMB / AD enumeration
+    crackmapexec \
+    # C2 client (Sliver is in its own container; install client binary only)
+    # DNS tunneling
+    dnscat2 \
+    # OSINT / harvesting
+    theharvester \
+    # HTTP staging server (Python built-in is fine; also provide apache2 for flexibility)
+    python3-requests \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Shodan CLI — --break-system-packages is fine in an isolated container
+RUN pip3 install --no-cache-dir --break-system-packages shodan
+
+# Sliver client binary (matches server version in dragonrx_c2)
+# Downloaded at build time so operators can run `sliver-client` from Kali
+ARG SLIVER_VERSION=v1.5.42
+RUN curl -fsSL \
+    "https://github.com/BishopFox/sliver/releases/download/${SLIVER_VERSION}/sliver-client_linux" \
+    -o /usr/local/bin/sliver-client \
+    && chmod +x /usr/local/bin/sliver-client
+
+WORKDIR /opt
+CMD ["/bin/bash"]

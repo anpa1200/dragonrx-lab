@@ -16,7 +16,10 @@ services:
   # ── ATTACKER SIDE ───────────────────────────────────────────────────
 
   kali:
-    image: kalilinux/kali-rolling:latest
+    build:
+      context: ./attacker
+      dockerfile: Dockerfile.kali
+    image: dragonrx_kali:local
     container_name: dragonrx_kali
     hostname: kali
     networks:
