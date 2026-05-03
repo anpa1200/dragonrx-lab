@@ -5,17 +5,19 @@ PLAYBOOK_FLAGS := -v
 
 # ─────────────────────────────────────────────────────────────────────────────
 up: deps
-	@echo "==> [1/4] Starting Docker services..."
+	@echo "==> [1/5] Building rxphage implant (Linux ELF + Windows PE)..."
+	docker compose build rxphage_builder
+	@echo "==> [2/5] Starting Docker services..."
 	docker compose up -d
 	@echo "    Waiting for Wazuh to initialise..."
 	@until docker exec dragonrx_wazuh pgrep wazuh-analysisd >/dev/null 2>&1; do sleep 5; done
 	@docker cp siem/wazuh/rules/dragonrx_rules.xml dragonrx_wazuh:/var/ossec/etc/rules/ 2>/dev/null || true
 	@docker exec dragonrx_wazuh /var/ossec/bin/wazuh-control restart >/dev/null 2>&1 || true
-	@echo "==> [2/4] Configuring host routing (Docker ↔ VirtualBox)..."
+	@echo "==> [3/5] Configuring host routing (Docker ↔ VirtualBox)..."
 	bash scripts/setup_routing.sh
-	@echo "==> [3/4] Starting Windows VMs..."
+	@echo "==> [4/5] Starting Windows VMs..."
 	vagrant up --provider virtualbox
-	@echo "==> [4/4] Running Ansible provisioning..."
+	@echo "==> [5/5] Running Ansible provisioning..."
 	cd $(ANSIBLE_DIR) && ansible-galaxy collection install -r requirements.yml
 	cd $(ANSIBLE_DIR) && ansible-playbook playbooks/deploy.yml $(PLAYBOOK_FLAGS)
 	@echo ""
