@@ -13,13 +13,16 @@ up: deps
 	@until docker exec dragonrx_wazuh pgrep wazuh-analysisd >/dev/null 2>&1; do sleep 5; done
 	@docker cp siem/wazuh/rules/dragonrx_rules.xml dragonrx_wazuh:/var/ossec/etc/rules/ 2>/dev/null || true
 	@docker exec dragonrx_wazuh /var/ossec/bin/wazuh-control restart >/dev/null 2>&1 || true
-	@echo "==> [3/5] Configuring host routing (Docker ↔ VirtualBox)..."
-	bash scripts/setup_routing.sh
-	@echo "==> [4/5] Starting Windows VMs..."
+	@echo "==> [3/6] Starting Windows VMs..."
 	vagrant up --provider virtualbox
-	@echo "==> [5/5] Running Ansible provisioning..."
+	@echo "==> [4/6] Disabling Windows Defender on WS01 (offline VMDK edit, bypasses Tamper Protection)..."
+	sudo bash scripts/disable_defender_offline.sh
+	vagrant up WS01 --provider virtualbox
+	@echo "==> [5/6] Running Ansible provisioning..."
 	cd $(ANSIBLE_DIR) && ansible-galaxy collection install -r requirements.yml
 	cd $(ANSIBLE_DIR) && ansible-playbook playbooks/deploy.yml $(PLAYBOOK_FLAGS)
+	@echo "==> [6/6] Configuring host routing and TCP offloading (Docker ↔ VirtualBox)..."
+	bash scripts/setup_routing.sh
 	@echo ""
 	@echo "==> Lab ready."
 	@echo "    Kibana : http://localhost:5601"
@@ -30,6 +33,15 @@ down:
 	vagrant halt
 	docker compose down
 	@echo "==> Lab stopped. Data volumes preserved."
+
+# Use this instead of 'make up' when the lab is already provisioned (day-2+ sessions).
+# Starts VMs and re-applies the runtime ethtool TCP offloading fix that resets on container restart.
+resume:
+	@echo "==> Resuming lab..."
+	docker compose up -d
+	vagrant up --provider virtualbox
+	bash scripts/setup_routing.sh
+	@echo "==> Lab resumed. Run 'make listeners' if Sliver listeners are gone."
 
 reset:
 	@echo "==> Full reset — destroying all state..."

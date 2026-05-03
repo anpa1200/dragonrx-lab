@@ -65,3 +65,8 @@
   ansible.windows.win_file:
     path: C:\Temp
     state: directory
+
+# Windows Defender is disabled by scripts/disable_defender_offline.sh (called by make up step 4).
+# That script powers off WS01, mounts the VMDK via qemu-nbd, and edits the SOFTWARE hive
+# directly with hivexregedit — bypassing Tamper Protection entirely since the OS isn't running.
+# Nothing to do here — Defender is already off by the time Ansible runs.

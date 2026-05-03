@@ -91,6 +91,15 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
           }
           Write-Host "VM #{name} ready for Ansible"
         PS
+
+      # WS01 only: disable Windows Defender OFFLINE before first boot.
+      # Tamper Protection on Windows 10 22H2 blocks ALL in-OS methods (Set-MpPreference,
+      # registry writes via WinRM, safe-mode WinRM also hangs — NTLM stack not loaded).
+      # The only reliable approach: edit the SOFTWARE registry hive directly on the VMDK
+      # from the Linux host while Windows is powered off (Tamper Protection has nothing to
+      # enforce when the OS is not running). The Makefile calls scripts/disable_defender_offline.sh
+      # before 'vagrant up' on a fresh deploy. On rebuild ('make reset && make up') the same
+      # script runs again automatically.
     end
   end
 end
