@@ -57,6 +57,18 @@ logs:
 shell:
 	docker exec -it dragonrx_kali /bin/bash
 
+# Re-start Sliver C2 listeners after a server restart (listeners are not persisted)
+listeners:
+	@echo "==> Starting HTTP and HTTPS listeners on dragonrx_c2..."
+	@docker exec -i dragonrx_c2 sh -c \
+	  "CFG=\$$(ls /root/.sliver-client/configs/*.cfg 2>/dev/null | head -1) && \
+	   printf 'http --lhost 0.0.0.0 --lport 80\nhttps --lhost 0.0.0.0 --lport 443\njobs\nexit\n' \
+	   | /usr/local/bin/sliver --config \"\$$CFG\" 2>/dev/null || true"
+	@echo "==> Listeners started. Run 'make sliver' to verify."
+
+sliver:
+	docker exec -it dragonrx_c2 sliver
+
 deps:
 	@command -v docker     >/dev/null 2>&1 || (echo "ERROR: docker not found"     && exit 1)
 	@docker compose version >/dev/null 2>&1 || (echo "ERROR: 'docker compose' (v2 plugin) not found — upgrade Docker Desktop or install the compose plugin" && exit 1)
