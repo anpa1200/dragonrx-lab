@@ -19,6 +19,7 @@ if [ -z "$(ls "$CONFIG_DIR"/*.cfg 2>/dev/null)" ]; then
         --name operator \
         --lhost 127.0.0.1 \
         --lport 31337 \
+        --permissions all \
         --save "$CONFIG_DIR"
     echo "[c2] Config saved — 'docker exec -it dragonrx_c2 sliver' is ready."
 fi
