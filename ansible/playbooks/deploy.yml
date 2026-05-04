@@ -50,6 +50,15 @@
       retries: 12
       delay: 15
       when: dc01_name.reboot_required
+    - name: Warm up PowerShell runspace after reboot
+      ansible.windows.win_shell: echo ready
+      args:
+        executable: powershell
+      retries: 5
+      delay: 15
+      register: _warmup
+      until: _warmup is not failed
+      when: dc01_name.reboot_required
   roles:
     - dc01
     - wazuh_agent
@@ -82,6 +91,15 @@
       retries: 12
       delay: 15
       when: fs01_name.reboot_required
+    - name: Warm up PowerShell runspace after reboot
+      ansible.windows.win_shell: echo ready
+      args:
+        executable: powershell
+      retries: 5
+      delay: 15
+      register: _warmup
+      until: _warmup is not failed
+      when: fs01_name.reboot_required
   roles:
     - fs01
     - wazuh_agent
@@ -113,6 +131,15 @@
       until: _ping is not failed
       retries: 12
       delay: 15
+      when: ws01_name.reboot_required
+    - name: Warm up PowerShell runspace after reboot
+      ansible.windows.win_shell: echo ready
+      args:
+        executable: powershell
+      retries: 5
+      delay: 15
+      register: _warmup
+      until: _warmup is not failed
       when: ws01_name.reboot_required
   roles:
     - ws01

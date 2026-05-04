@@ -1,14 +1,11 @@
 ---
 - name: Disable TCP checksum and LSO offloading on target_net NIC (Ethernet 2)
-  ansible.windows.win_powershell:
-    script: |
-      # Virtual NICs defer checksum computation to "hardware" that doesn't exist
-      # in a VirtualBox bridge stack. Linux receives packets with invalid TCP
-      # checksums and silently drops them. Force software computation on both sides.
-      $nic = "Ethernet 2"
-      Disable-NetAdapterChecksumOffload -Name $nic -TcpIPv4 -UdpIPv4 -TcpIPv6 -UdpIPv6 -ErrorAction SilentlyContinue
-      Disable-NetAdapterLso             -Name $nic -IPv4 -ErrorAction SilentlyContinue
-      Write-Output "NIC offloading disabled on $nic"
+  ansible.windows.win_shell: |
+    Disable-NetAdapterChecksumOffload -Name "Ethernet 2" -TcpIPv4 -UdpIPv4 -TcpIPv6 -UdpIPv6 -ErrorAction SilentlyContinue
+    Disable-NetAdapterLso             -Name "Ethernet 2" -IPv4 -ErrorAction SilentlyContinue
+    Write-Output "NIC offloading disabled on Ethernet 2"
+  args:
+    executable: powershell
 
 - name: Install AD DS role
   ansible.windows.win_feature:
