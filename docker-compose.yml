@@ -43,6 +43,10 @@ services:
     cap_add: [NET_ADMIN, NET_RAW]
     sysctls:
       net.ipv4.ip_forward: 1
+    devices:
+      - /dev/dri:/dev/dri
+    group_add:
+      - video
     depends_on:
       rxphage_builder:
         condition: service_completed_successfully
