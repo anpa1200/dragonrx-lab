@@ -17,18 +17,23 @@ error() { echo -e "${RED}[!]${NC} $*" >&2; exit 1; }
 VM_NAME="dragonrx_ws01"
 MOUNT=/mnt/ws01_offline
 
+# VirtualBox VMs are registered per-user. When called via 'sudo', run VBoxManage
+# as the real user ($SUDO_USER) so it can see the VM registry.
+REAL_USER=${SUDO_USER:-$USER}
+vboxmanage() { sudo -u "$REAL_USER" VBoxManage "$@"; }
+
 # ── Locate the VMDK ──────────────────────────────────────────────────────────
-VMDK=$(VBoxManage showvminfo "$VM_NAME" --machinereadable 2>/dev/null \
+VMDK=$(vboxmanage showvminfo "$VM_NAME" --machinereadable 2>/dev/null \
        | grep '"SATA Controller-0-0"\|"IDE Controller-0-0"\|"NVMe Controller-0-0"' \
-       | head -1 | cut -d'"' -f4)
-[[ -z "$VMDK" ]] && error "VMDK not found for $VM_NAME — has 'vagrant up' created the VM yet?"
+       | head -1 | cut -d'"' -f4 || true)
+[[ -z "$VMDK" ]] && error "VMDK not found for $VM_NAME (looked as user $REAL_USER) — has 'vagrant up' created the VM yet?"
 info "WS01 VMDK: $VMDK"
 
 # ── Ensure VM is powered off ─────────────────────────────────────────────────
-STATE=$(VBoxManage showvminfo "$VM_NAME" --machinereadable | grep '^VMState=' | cut -d'"' -f2)
+STATE=$(vboxmanage showvminfo "$VM_NAME" --machinereadable 2>/dev/null | grep '^VMState=' | cut -d'"' -f2 || true)
 if [[ "$STATE" != "poweroff" && "$STATE" != "aborted" && "$STATE" != "saved" ]]; then
     info "Powering off $VM_NAME (state: $STATE)..."
-    VBoxManage controlvm "$VM_NAME" poweroff 2>/dev/null || true
+    vboxmanage controlvm "$VM_NAME" poweroff 2>/dev/null || true
     info "Waiting for VirtualBox to release VMDK lock..."
     sleep 8
 fi
