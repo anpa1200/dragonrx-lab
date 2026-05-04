@@ -97,7 +97,7 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
                                   -IPAddress $target -PrefixLength 24
               Write-Host "NIC2 configured: $target/24 on $($nic2.Name)"
           } else {
-              Write-Host "ERROR: NIC2 not found after 30 s — check VirtualBox bridge config"
+              Write-Host "ERROR: NIC2 not found after 30 s - check VirtualBox bridge config"
               exit 1
           }
         PS
