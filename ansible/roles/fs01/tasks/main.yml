@@ -1,15 +1,10 @@
 ---
-- name: Disable TCP checksum and LSO offloading on target_net NIC (Ethernet 2)
-  ansible.windows.win_shell: |
-    $job = Start-Job {
-        Disable-NetAdapterChecksumOffload -Name "Ethernet 2" -TcpIPv4 -UdpIPv4 -TcpIPv6 -UdpIPv6 -ErrorAction SilentlyContinue
-        Disable-NetAdapterLso             -Name "Ethernet 2" -IPv4 -ErrorAction SilentlyContinue
-    }
-    Wait-Job $job -Timeout 30 | Out-Null
-    Remove-Job $job -Force
-    Write-Output "NIC offloading task complete"
-  args:
-    executable: powershell
+- name: Disable TCP task offloading (prevents checksum drops on VirtualBox bridge)
+  ansible.windows.win_regedit:
+    path: HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters
+    name: DisableTaskOffload
+    data: 1
+    type: dword
 
 - name: Wait for DC01 LDAP
   ansible.windows.win_wait_for:

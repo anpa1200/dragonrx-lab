@@ -5,6 +5,8 @@ PLAYBOOK_FLAGS := -v
 
 # ─────────────────────────────────────────────────────────────────────────────
 up: deps
+	@echo "==> [0/5] Pre-authorising sudo (step 4 needs root for offline VMDK edit)..."
+	@sudo -v
 	@echo "==> [1/5] Building rxphage implant (Linux ELF + Windows PE)..."
 	docker compose build rxphage_builder
 	@echo "==> [2/5] Starting Docker services..."
