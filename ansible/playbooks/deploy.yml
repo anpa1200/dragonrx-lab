@@ -33,7 +33,7 @@
     - name: Reboot if hostname changed
       ansible.windows.win_reboot:
         reboot_timeout: 300
-        post_reboot_delay: 30
+        post_reboot_delay: 60
       when: dc01_name.reboot_required
   roles:
     - dc01
@@ -50,7 +50,7 @@
     - name: Reboot if hostname changed
       ansible.windows.win_reboot:
         reboot_timeout: 300
-        post_reboot_delay: 30
+        post_reboot_delay: 60
       when: fs01_name.reboot_required
   roles:
     - fs01
@@ -67,7 +67,7 @@
     - name: Reboot if hostname changed
       ansible.windows.win_reboot:
         reboot_timeout: 300
-        post_reboot_delay: 30
+        post_reboot_delay: 60
       when: ws01_name.reboot_required
   roles:
     - ws01
