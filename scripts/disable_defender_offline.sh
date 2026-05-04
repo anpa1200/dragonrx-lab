@@ -19,7 +19,8 @@ MOUNT=/mnt/ws01_offline
 
 # ── Locate the VMDK ──────────────────────────────────────────────────────────
 VMDK=$(VBoxManage showvminfo "$VM_NAME" --machinereadable 2>/dev/null \
-       | grep '"IDE Controller-0-0"' | cut -d'"' -f4)
+       | grep '"SATA Controller-0-0"\|"IDE Controller-0-0"\|"NVMe Controller-0-0"' \
+       | head -1 | cut -d'"' -f4)
 [[ -z "$VMDK" ]] && error "VMDK not found for $VM_NAME — has 'vagrant up' created the VM yet?"
 info "WS01 VMDK: $VMDK"
 
@@ -28,14 +29,25 @@ STATE=$(VBoxManage showvminfo "$VM_NAME" --machinereadable | grep '^VMState=' | 
 if [[ "$STATE" != "poweroff" && "$STATE" != "aborted" && "$STATE" != "saved" ]]; then
     info "Powering off $VM_NAME (state: $STATE)..."
     VBoxManage controlvm "$VM_NAME" poweroff 2>/dev/null || true
-    sleep 3
+    info "Waiting for VirtualBox to release VMDK lock..."
+    sleep 8
 fi
 
 # ── Connect VMDK via qemu-nbd ─────────────────────────────────────────────────
 info "Connecting VMDK via qemu-nbd..."
-modprobe nbd max_part=8 2>/dev/null || true
+modprobe nbd max_part=16 2>/dev/null || true
+# Disconnect any stale nbd0 connection first
+qemu-nbd --disconnect /dev/nbd0 2>/dev/null || true
+sleep 1
 qemu-nbd --connect=/dev/nbd0 "$VMDK"
 sleep 2
+
+# Wait for partition devices to appear
+for i in $(seq 1 10); do
+    ls /dev/nbd0p* >/dev/null 2>&1 && break
+    sleep 1
+done
+info "Partitions found: $(ls /dev/nbd0p* 2>/dev/null | tr '\n' ' ')"
 
 cleanup() {
     umount "$MOUNT" 2>/dev/null || true
@@ -44,13 +56,24 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# ── Mount NTFS partition ──────────────────────────────────────────────────────
+# ── Find and mount the Windows C: partition ───────────────────────────────────
+# Windows 10 disk layout (MBR or GPT) puts C: on partition 2, 3, or 4.
+# Detect by looking for the partition that contains Windows/System32.
 mkdir -p "$MOUNT"
-ntfsfix -d /dev/nbd0p1 >/dev/null 2>&1 || true
-mount -t ntfs-3g /dev/nbd0p1 "$MOUNT" -o rw 2>/dev/null || \
-    mount -t ntfs-3g /dev/nbd0p1 "$MOUNT" -o ro && \
-    error "Cannot mount NTFS read-write — VM may not have shut down cleanly"
-info "NTFS partition mounted at $MOUNT"
+WINDOWS_PART=""
+for PART in /dev/nbd0p2 /dev/nbd0p3 /dev/nbd0p4 /dev/nbd0p1; do
+    [[ -b "$PART" ]] || continue
+    ntfsfix -d "$PART" >/dev/null 2>&1 || true
+    if mount -t ntfs-3g "$PART" "$MOUNT" -o rw,nofail 2>/dev/null; then
+        if [[ -d "$MOUNT/Windows/System32" ]]; then
+            WINDOWS_PART="$PART"
+            info "C: drive found on $PART, mounted read-write at $MOUNT"
+            break
+        fi
+        umount "$MOUNT" 2>/dev/null || true
+    fi
+done
+[[ -z "$WINDOWS_PART" ]] && error "Could not find Windows C: partition on any nbd0pN — check VMDK connection with: lsblk /dev/nbd0"
 
 # ── Edit SOFTWARE hive ────────────────────────────────────────────────────────
 SOFTWARE="$MOUNT/Windows/System32/config/SOFTWARE"
@@ -86,7 +109,10 @@ info "Windows Defender disabled in SOFTWARE hive"
 # ── Verify ────────────────────────────────────────────────────────────────────
 RESULT=$(hivexregedit --export "$SOFTWARE" '\' 2>/dev/null \
          | grep '"DisableAntiVirus"' | head -1)
-[[ "$RESULT" == *"00000001"* ]] && info "Verified: DisableAntiVirus=1 in hive" \
-    || warn "Verification uncertain — check manually after boot"
+if [[ "$RESULT" == *"00000001"* ]]; then
+    info "Verified: DisableAntiVirus=1 in hive"
+else
+    warn "Verification uncertain — check manually after boot"
+fi
 
-info "Offline Defender disable complete."
+info "Offline Defender disable complete. WS01 is powered off — 'vagrant up WS01' will start it."

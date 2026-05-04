@@ -18,6 +18,7 @@ up: deps
 	@echo "==> [3/6] Starting Windows VMs..."
 	vagrant up --provider virtualbox
 	@echo "==> [4/6] Disabling Windows Defender on WS01 (offline VMDK edit, bypasses Tamper Protection)..."
+	@sudo -v
 	sudo bash scripts/disable_defender_offline.sh
 	vagrant up WS01 --provider virtualbox
 	@echo "==> [5/6] Running Ansible provisioning..."
