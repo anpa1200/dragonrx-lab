@@ -122,8 +122,14 @@ for box in "${BOXES_NEEDED[@]}"; do
   fi
 done
 
-# ── Step 3: Docker services ───────────────────────────────────────────────────
-step "Step 3: Starting Docker services"
+# ── Step 3: Build rxphage implant ────────────────────────────────────────────
+step "Step 3: Building rxphage implant (Linux ELF + Windows PE + DLL)"
+
+docker compose build rxphage_builder
+info "rxphage implant built"
+
+# ── Step 4: Docker services ───────────────────────────────────────────────────
+step "Step 4: Starting Docker services"
 
 docker compose up -d
 info "Waiting for Wazuh analysisd to initialise (may take ~30 s)..."
@@ -133,11 +139,6 @@ docker exec dragonrx_wazuh /var/ossec/bin/wazuh-control restart >/dev/null 2>&1 
 info "Custom Wazuh detection rules installed."
 docker compose ps
 timer
-
-# ── Step 4: Host networking ───────────────────────────────────────────────────
-step "Step 4: Configuring host routing (Docker ↔ VirtualBox bridge)"
-
-bash "$SCRIPT_DIR/setup_routing.sh"
 
 # ── Step 5: Windows VMs ───────────────────────────────────────────────────────
 if [[ $SKIP_VMS -eq 0 ]]; then
@@ -149,30 +150,49 @@ else
   step "Step 5: Skipped (--skip-vms)"
 fi
 
-# ── Step 6: Ansible provisioning ─────────────────────────────────────────────
+# ── Step 6: Disable Windows Defender on WS01 (offline VMDK edit) ─────────────
+step "Step 6: Disabling Windows Defender on WS01 (offline VMDK edit)"
+info "Tamper Protection blocks all in-OS methods — editing hive while VM is powered off..."
+# Needs root for modprobe/qemu-nbd/mount; VBoxManage runs as $SUDO_USER inside the script.
+if [[ $EUID -ne 0 ]]; then
+  sudo -v
+  sudo bash "$SCRIPT_DIR/disable_defender_offline.sh"
+else
+  bash "$SCRIPT_DIR/disable_defender_offline.sh"
+fi
+info "Restarting WS01 with Defender disabled..."
+vagrant up WS01 --provider virtualbox
+timer
+
+# ── Step 7: Host networking ───────────────────────────────────────────────────
+step "Step 7: Configuring host routing (Docker ↔ VirtualBox bridge)"
+
+bash "$SCRIPT_DIR/setup_routing.sh"
+
+# ── Step 8: Ansible provisioning ─────────────────────────────────────────────
 if [[ $SKIP_ANSIBLE -eq 0 ]]; then
-  step "Step 6: Ansible provisioning"
-  info "Phase 6a: Installing Galaxy collections..."
+  step "Step 8: Ansible provisioning"
+  info "Phase 8a: Installing Galaxy collections..."
   cd ansible
   ansible-galaxy collection install -r requirements.yml
 
-  info "Phase 6b: Running deploy playbook..."
+  info "Phase 8b: Running deploy playbook..."
   ansible-playbook playbooks/deploy.yml -v
   cd "$LAB_DIR"
   timer
 else
-  step "Step 6: Skipped (--skip-ansible)"
+  step "Step 8: Skipped (--skip-ansible)"
 fi
 
-# ── Step 7: Validation ────────────────────────────────────────────────────────
+# ── Step 9: Validation ────────────────────────────────────────────────────────
 if [[ $RUN_TEST -eq 1 ]]; then
-  step "Step 7: Running validation suite"
+  step "Step 9: Running validation suite"
   cd ansible
   ansible-playbook playbooks/test.yml -v
   cd "$LAB_DIR"
   timer
 else
-  step "Step 7: Skipped (--no-test)"
+  step "Step 9: Skipped (--no-test)"
 fi
 
 # ── Done ──────────────────────────────────────────────────────────────────────
@@ -191,7 +211,7 @@ ${GRN}${BOLD}╔═════════════════════�
   Attack run  : ${CYN}make attack${NC}
 
   ${BOLD}Target network:${NC}
-  WEB01  192.168.10.100  Spring Boot + Log4j 2.14.1  :8080
+  WEB01  192.168.10.100  Tomcat + Log4j 2.14.1  :8080
   DC01   192.168.10.10   Windows Server 2019 AD
   FS01   192.168.10.20   Research + Manufacturing shares
   WS01   192.168.10.50   Windows 10 (jsmith)
