@@ -71,25 +71,35 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
       end
 
       # Set static IP on NIC2 (bridged adapter) without triggering a reboot.
-      # Finds NIC2 by excluding the default-route adapter (NIC1 = NAT).
-      node.vm.provision "shell", privileged: false,
+      # run: "always" ensures the IP is re-applied after every vagrant up/reload —
+      # critical for WS01 (Windows 10 initialises NICs slower than Server 2019,
+      # so a run-once provisioner fires before NIC2 is Up and silently skips it).
+      node.vm.provision "shell", run: "always", privileged: false,
         powershell_elevated_interactive: false,
         inline: <<~PS
+          $target = '#{cfg[:ip]}'
           $defIdx = (Get-NetRoute -DestinationPrefix '0.0.0.0/0' |
                      Sort-Object RouteMetric | Select-Object -First 1).InterfaceIndex
-          $nic2   = Get-NetAdapter |
-                    Where-Object { $_.InterfaceIndex -ne $defIdx -and $_.Status -eq 'Up' } |
-                    Select-Object -First 1
-          if ($nic2) {
-              Remove-NetIPAddress  -InterfaceIndex $nic2.InterfaceIndex -Confirm:$false -ErrorAction SilentlyContinue
-              Remove-NetRoute      -InterfaceIndex $nic2.InterfaceIndex -Confirm:$false -ErrorAction SilentlyContinue
-              New-NetIPAddress     -InterfaceIndex $nic2.InterfaceIndex `
-                                   -IPAddress '#{cfg[:ip]}' -PrefixLength 24
-              Write-Host "NIC2 configured: #{cfg[:ip]}/24"
-          } else {
-              Write-Host "WARNING: NIC2 not found (may still be initialising)"
+          # Retry up to 30 s for NIC2 to appear (Windows 10 slow NIC init)
+          $nic2 = $null
+          for ($i = 0; $i -lt 6; $i++) {
+              $nic2 = Get-NetAdapter |
+                      Where-Object { $_.InterfaceIndex -ne $defIdx -and $_.Status -eq 'Up' } |
+                      Select-Object -First 1
+              if ($nic2) { break }
+              Write-Host "Waiting for NIC2 ($i/6)..."
+              Start-Sleep -Seconds 5
           }
-          Write-Host "VM #{name} ready for Ansible"
+          if ($nic2) {
+              Remove-NetIPAddress -InterfaceIndex $nic2.InterfaceIndex -Confirm:$false -ErrorAction SilentlyContinue
+              Remove-NetRoute     -InterfaceIndex $nic2.InterfaceIndex -Confirm:$false -ErrorAction SilentlyContinue
+              New-NetIPAddress    -InterfaceIndex $nic2.InterfaceIndex `
+                                  -IPAddress $target -PrefixLength 24
+              Write-Host "NIC2 configured: $target/24 on $($nic2.Name)"
+          } else {
+              Write-Host "ERROR: NIC2 not found after 30 s — check VirtualBox bridge config"
+              exit 1
+          }
         PS
 
       # WS01 only: disable Windows Defender OFFLINE before first boot.
