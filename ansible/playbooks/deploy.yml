@@ -106,8 +106,16 @@
 
 - name: "Phase 4 — Configure WS01 (Workstation)"
   hosts: ws01
-  gather_facts: true
+  gather_facts: false
   pre_tasks:
+    - name: Wait for WS01 WinRM (may be booting after offline Defender VMDK edit)
+      ansible.builtin.wait_for_connection:
+        delay: 15
+        timeout: 600
+        sleep: 15
+        connect_timeout: 30
+    - name: Gather facts after WinRM is up
+      ansible.builtin.setup:
     - name: Set computer name to WS01
       ansible.windows.win_hostname:
         name: WS01
