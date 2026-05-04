@@ -18,9 +18,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # Impacket suite (secretsdump, GetUserSPNs, psexec, etc.)
     impacket-scripts python3-impacket \
     # Password cracking
-    hashcat \
+    hashcat john \
     # SMB / AD enumeration
     crackmapexec \
+    # Archive / compression
+    zip \
     # C2 client (Sliver is in its own container; install client binary only)
     # DNS tunneling
     dnscat2 \
@@ -30,8 +32,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-requests \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Shodan CLI — --break-system-packages is fine in an isolated container
-RUN pip3 install --no-cache-dir --break-system-packages shodan
+# Shodan CLI + pypykatz (LSASS dump parser) — --break-system-packages is fine in an isolated container
+RUN pip3 install --no-cache-dir --break-system-packages shodan pypykatz
 
 # Sliver client binary (matches server version in dragonrx_c2)
 # Downloaded at build time so operators can run `sliver-client` from Kali
