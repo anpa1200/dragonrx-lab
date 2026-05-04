@@ -185,6 +185,20 @@ else
 fi
 info "Restarting WS01 with Defender disabled..."
 vagrant up WS01 --provider virtualbox
+
+info "Waiting for WS01 WinRM on 192.168.10.50:5985 (checking every 10 s, up to 10 min)..."
+WS01_IP="192.168.10.50"
+WS01_DEADLINE=$(( SECONDS + 600 ))
+while (( SECONDS < WS01_DEADLINE )); do
+  if nc -z -w3 "$WS01_IP" 5985 2>/dev/null; then
+    info "WS01 WinRM is up — $(( WS01_DEADLINE - SECONDS ))s to spare"
+    break
+  fi
+  printf '.'
+  sleep 10
+done
+echo
+(( SECONDS >= WS01_DEADLINE )) && warn "WS01 WinRM did not respond within 10 min — Ansible will retry"
 timer
 
 # ── Step 7: Host networking ───────────────────────────────────────────────────
