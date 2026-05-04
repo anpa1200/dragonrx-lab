@@ -21,6 +21,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     hashcat john \
     # SMB / AD enumeration (netexec = crackmapexec successor, binary: nxc)
     netexec \
+    # WinRM shell (works on DCs where smbexec/psexec are blocked by SCM policy)
+    evil-winrm \
     # Archive / compression
     zip \
     # C2 client (Sliver is in its own container; install client binary only)
