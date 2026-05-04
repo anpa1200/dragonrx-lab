@@ -122,11 +122,16 @@ for box in "${BOXES_NEEDED[@]}"; do
   fi
 done
 
-# ── Step 3: Build rxphage implant ────────────────────────────────────────────
-step "Step 3: Building rxphage implant (Linux ELF + Windows PE + DLL)"
+# ── Step 3: Build attack containers ──────────────────────────────────────────
+step "Step 3: Building attack containers (rxphage implant + Kali toolset)"
 
+info "Building rxphage implant (Linux ELF, Windows PE, DLL sideload, ransomware demo)..."
 docker compose build rxphage_builder
-info "rxphage implant built"
+
+info "Building Kali container (impacket, john, crackmapexec, hashcat, pypykatz, sliver-client)..."
+docker compose build kali
+
+info "Attack containers built"
 
 # ── Step 4: Docker services ───────────────────────────────────────────────────
 step "Step 4: Starting Docker services"
@@ -139,6 +144,24 @@ docker exec dragonrx_wazuh /var/ossec/bin/wazuh-control restart >/dev/null 2>&1 
 info "Custom Wazuh detection rules installed."
 docker compose ps
 timer
+
+# ── Step 4b: Kali tool staging ────────────────────────────────────────────────
+info "Verifying Kali attack tools..."
+MISSING=()
+for tool in impacket-secretsdump impacket-GetUserSPNs impacket-smbclient \
+            impacket-smbexec crackmapexec john hashcat pypykatz; do
+  if ! docker exec dragonrx_kali which "$tool" &>/dev/null && \
+     ! docker exec dragonrx_kali python3 -c "import $(echo $tool | tr '-' '_')" &>/dev/null 2>&1; then
+    MISSING+=("$tool")
+  fi
+done
+[[ ${#MISSING[@]} -gt 0 ]] && warn "Tools not found in Kali: ${MISSING[*]}" || info "All attack tools verified"
+
+info "Starting HTTP staging server in Kali (port 8900 → /opt/tools)..."
+docker exec -d dragonrx_kali bash -c \
+  "pkill -f 'http.server 8900' 2>/dev/null; python3 -m http.server 8900 --directory /opt/tools/" || true
+info "Staging server ready: http://192.168.10.5:8900/"
+info "  Available: $(docker exec dragonrx_kali ls /opt/tools/ 2>/dev/null | tr '\n' ' ')"
 
 # ── Step 5: Windows VMs ───────────────────────────────────────────────────────
 if [[ $SKIP_VMS -eq 0 ]]; then
@@ -205,10 +228,10 @@ ${GRN}${BOLD}╔═════════════════════�
   Total time : $((ELAPSED / 60))m$((ELAPSED % 60))s
 
   ${BOLD}Access points:${NC}
-  Kibana SIEM : ${CYN}http://localhost:5601${NC}
-  Kali shell  : ${CYN}make shell${NC}   (docker exec -it dragonrx_kali /bin/bash)
-  Sliver C2   : ${CYN}docker exec -it dragonrx_c2 sliver${NC}
-  Attack run  : ${CYN}make attack${NC}
+  Kibana SIEM    : ${CYN}http://localhost:5601${NC}
+  Kali shell     : ${CYN}docker exec -it dragonrx_kali /bin/bash${NC}
+  Sliver C2      : ${CYN}docker exec -it dragonrx_c2 sliver${NC}
+  Tool staging   : ${CYN}http://192.168.10.5:8900/${NC}  (served from Kali /opt/tools)
 
   ${BOLD}Target network:${NC}
   WEB01  192.168.10.100  Tomcat + Log4j 2.14.1  :8080
