@@ -53,18 +53,56 @@
       register: dc01_winrm
       ignore_errors: true
 
-    - name: "PRE | WS01 WinRM reachable"
-      shell: nc -z -w3 192.168.10.50 5985 && echo reachable
-      register: ws01_winrm
+    - name: "PRE | Assert DC01 is reachable"
+      assert:
+        that: "'reachable' in dc01_winrm.stdout"
+        fail_msg: "DC01 WinRM (192.168.10.10:5985) unreachable — run 'vagrant up DC01' first"
+
+    - name: "PRE | Check WS01 vagrant state"
+      shell: |
+        cd /home/andrey/dragonrx-lab && \
+        vagrant status WS01 2>/dev/null | grep WS01 | awk '{print $2}'
+      register: ws01_vagrant_state
+
+    - name: "PRE | Boot WS01 if not running (vagrant up WS01)"
+      shell: |
+        cd /home/andrey/dragonrx-lab && vagrant up WS01 2>&1
+      when: ws01_vagrant_state.stdout | trim != "running"
+      register: ws01_boot
+      timeout: 300
+
+    - name: "PRE | Re-apply NIC2 static IP on WS01 after boot (run: always provisioner)"
+      shell: |
+        cd /home/andrey/dragonrx-lab && vagrant provision WS01 2>&1 | tail -5
+      when: ws01_vagrant_state.stdout | trim != "running"
       ignore_errors: true
+
+    - name: "PRE | Wait for WS01 WinRM to accept connections (port 5985)"
+      shell: |
+        for i in $(seq 1 30); do
+          nc -z -w2 192.168.10.50 5985 2>/dev/null && echo reachable && exit 0
+          echo "Attempt $i/30 — waiting 10s..."
+          sleep 10
+        done
+        echo unreachable
+      register: ws01_winrm
+      changed_when: false
+
+    - name: "PRE | Assert WS01 WinRM is now up"
+      assert:
+        that: "'reachable' in ws01_winrm.stdout"
+        fail_msg: |
+          WS01 WinRM still unreachable after 5 min.
+          Check: vagrant status WS01 — if 'aborted' run: vagrant destroy WS01 && vagrant up WS01
 
     - name: "PRE | Preflight results"
       debug:
         msg:
           - "JNDI  : {{ jndi_state.stdout | trim }}"
           - "C2    : {{ c2_state.stdout | trim }}"
-          - "DC01  : {{ dc01_winrm.stdout | default('unreachable') }}"
-          - "WS01  : {{ ws01_winrm.stdout | default('unreachable') }}"
+          - "DC01  : {{ dc01_winrm.stdout | default('reachable') }}"
+          - "WS01  : {{ ws01_winrm.stdout | regex_search('reachable') | default('unreachable') }}"
+          - "WS01 was: {{ ws01_vagrant_state.stdout | trim }} (booted: {{ ws01_vagrant_state.stdout | trim != 'running' }})"
 
 # ============================================================================
 # PHASE 0 — Reconnaissance   ATT&CK: T1595.002, T1592.002
